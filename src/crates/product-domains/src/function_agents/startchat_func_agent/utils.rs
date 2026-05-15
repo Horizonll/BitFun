@@ -137,6 +137,44 @@ pub fn limit_quick_actions(mut actions: Vec<QuickAction>) -> Vec<QuickAction> {
     actions
 }
 
+pub struct ParsedCompleteAnalysis {
+    pub analysis: AIGeneratedAnalysis,
+    pub predicted_actions_count: usize,
+    pub quick_actions_count: usize,
+}
+
+pub fn parse_complete_analysis_value(parsed: &serde_json::Value) -> ParsedCompleteAnalysis {
+    let summary = parsed["summary"]
+        .as_str()
+        .unwrap_or("You were working on development, with multiple files modified.")
+        .to_string();
+
+    let predicted_actions = parsed["predicted_actions"]
+        .as_array()
+        .map(|actions_array| parse_predicted_actions_from_values(actions_array))
+        .unwrap_or_default();
+    let predicted_actions_count = predicted_actions.len();
+    let predicted_actions = normalize_predicted_actions(predicted_actions);
+
+    let quick_actions = parsed["quick_actions"]
+        .as_array()
+        .map(|actions_array| parse_quick_actions_from_values(actions_array))
+        .unwrap_or_default();
+    let quick_actions_count = quick_actions.len();
+    let quick_actions = limit_quick_actions(quick_actions);
+
+    ParsedCompleteAnalysis {
+        analysis: AIGeneratedAnalysis {
+            summary,
+            ongoing_work: Vec::new(),
+            predicted_actions,
+            quick_actions,
+        },
+        predicted_actions_count,
+        quick_actions_count,
+    }
+}
+
 pub fn parse_action_priority_label(label: &str) -> ActionPriority {
     match label {
         "High" => ActionPriority::High,

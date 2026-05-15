@@ -115,67 +115,39 @@ impl AIWorkStateService {
             AgentError::internal_error(format!("Failed to parse complete analysis response: {}", e))
         })?;
 
-        let summary = parsed["summary"]
-            .as_str()
-            .unwrap_or("You were working on development, with multiple files modified.")
-            .to_string();
+        let parsed_analysis = super::utils::parse_complete_analysis_value(&parsed);
 
-        let ongoing_work = Vec::new();
-
-        let predicted_actions = if let Some(actions_array) = parsed["predicted_actions"].as_array()
-        {
-            super::utils::parse_predicted_actions_from_values(actions_array)
-        } else {
-            Vec::new()
-        };
-        let predicted_actions_count = predicted_actions.len();
-        let predicted_actions = super::utils::normalize_predicted_actions(predicted_actions);
-
-        if predicted_actions_count < 3 {
+        if parsed_analysis.predicted_actions_count < 3 {
             warn!(
                 "AI generated insufficient predicted actions ({}), adding defaults",
-                predicted_actions_count
+                parsed_analysis.predicted_actions_count
             );
-        } else if predicted_actions_count > 3 {
+        } else if parsed_analysis.predicted_actions_count > 3 {
             warn!(
                 "AI generated too many predicted actions ({}), truncating to 3",
-                predicted_actions_count
+                parsed_analysis.predicted_actions_count
             );
         }
 
-        let quick_actions = if let Some(actions_array) = parsed["quick_actions"].as_array() {
-            super::utils::parse_quick_actions_from_values(actions_array)
-        } else {
-            Vec::new()
-        };
-
-        let quick_actions_count = quick_actions.len();
-        let quick_actions = super::utils::limit_quick_actions(quick_actions);
-
-        if quick_actions_count < 6 {
+        if parsed_analysis.quick_actions_count < 6 {
             // Don't fill defaults here, frontend has its own defaultActions with i18n support
             warn!(
                 "AI generated insufficient quick actions ({}), frontend will use defaults",
-                quick_actions_count
+                parsed_analysis.quick_actions_count
             );
-        } else if quick_actions_count > 6 {
+        } else if parsed_analysis.quick_actions_count > 6 {
             warn!(
                 "AI generated too many quick actions ({}), truncating to 6",
-                quick_actions_count
+                parsed_analysis.quick_actions_count
             );
         }
 
         debug!(
             "Parsing completed: predicted_actions={}, quick_actions={}",
-            predicted_actions.len(),
-            quick_actions.len()
+            parsed_analysis.analysis.predicted_actions.len(),
+            parsed_analysis.analysis.quick_actions.len()
         );
 
-        Ok(AIGeneratedAnalysis {
-            summary,
-            ongoing_work,
-            predicted_actions,
-            quick_actions,
-        })
+        Ok(parsed_analysis.analysis)
     }
 }

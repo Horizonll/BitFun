@@ -4,7 +4,8 @@ use bitfun_product_domains::miniapp::bridge_builder::build_csp_content;
 use bitfun_product_domains::miniapp::compiler::compile;
 use bitfun_product_domains::miniapp::exporter::{ExportCheckResult, ExportTarget};
 use bitfun_product_domains::miniapp::host_routing::{
-    command_basename_for_allowlist, is_host_primitive,
+    command_basename_allowed, command_basename_for_allowlist, host_allowed_by_allowlist,
+    is_host_primitive,
 };
 use bitfun_product_domains::miniapp::lifecycle::{
     build_deps_revision, build_runtime_state, build_source_revision, build_worker_revision,
@@ -223,6 +224,28 @@ fn miniapp_host_routing_preserves_existing_primitive_and_allowlist_contract() {
     assert_eq!(command_basename_for_allowlist("git.exe"), "git");
     assert_eq!(command_basename_for_allowlist("/usr/bin/git"), "git");
     assert_eq!(command_basename_for_allowlist("CARGO"), "cargo");
+
+    assert!(command_basename_allowed(&[], "git"));
+    assert!(command_basename_allowed(&["Git".to_string()], "git"));
+    assert!(!command_basename_allowed(&["cargo".to_string()], "git"));
+
+    assert!(host_allowed_by_allowlist(&[], "api.example.com"));
+    assert!(host_allowed_by_allowlist(
+        &["*".to_string()],
+        "api.example.com"
+    ));
+    assert!(host_allowed_by_allowlist(
+        &["example.com".to_string()],
+        "api.example.com"
+    ));
+    assert!(host_allowed_by_allowlist(
+        &["api.example.com".to_string()],
+        "api.example.com"
+    ));
+    assert!(!host_allowed_by_allowlist(
+        &["example.com".to_string()],
+        "badexample.com"
+    ));
 }
 
 #[test]

@@ -3,9 +3,9 @@
 use bitfun_product_domains::function_agents::{
     git_func_agent::{
         assemble_commit_message, build_changes_summary_from_paths, build_commit_prompt,
-        detect_change_patterns, extract_module_name, infer_file_type, parse_commit_type_label,
-        ChangePattern, CommitFormat, CommitMessageOptions, CommitType, FileChange, FileChangeType,
-        ProjectContext,
+        detect_change_patterns, extract_module_name, infer_file_type, parse_commit_analysis_value,
+        parse_commit_type_label, ChangePattern, CommitFormat, CommitMessageOptions, CommitType,
+        FileChange, FileChangeType, ProjectContext,
     },
     ports::{
         CommitAiAnalysisRequest, FunctionAgentAiPort, FunctionAgentFuture, FunctionAgentGitPort,
@@ -13,7 +13,7 @@ use bitfun_product_domains::function_agents::{
     },
     startchat_func_agent::{
         build_complete_analysis_prompt, combine_git_diffs, limit_quick_actions,
-        normalize_predicted_actions, parse_git_status_porcelain,
+        normalize_predicted_actions, parse_complete_analysis_value, parse_git_status_porcelain,
         parse_predicted_actions_from_values, parse_quick_actions_from_values, time_of_day_for_hour,
         ActionPriority, GitWorkState, QuickActionType, TimeOfDay, WorkStateOptions,
     },
@@ -173,6 +173,37 @@ fn git_function_agent_summary_helpers_preserve_commit_shape() {
 }
 
 #[test]
+fn git_function_agent_analysis_parser_preserves_defaults_and_required_title() {
+    let analysis = parse_commit_analysis_value(&serde_json::json!({
+        "type": "feature",
+        "scope": "core",
+        "title": "feat(core): add helper",
+        "body": "Move pure parsing policy.",
+        "breaking_changes": "none",
+        "confidence": 0.95
+    }))
+    .expect("valid commit analysis");
+
+    assert_eq!(analysis.commit_type, CommitType::Feat);
+    assert_eq!(analysis.scope.as_deref(), Some("core"));
+    assert_eq!(analysis.title, "feat(core): add helper");
+    assert_eq!(analysis.reasoning, "AI analysis");
+    assert!((analysis.confidence - 0.95).abs() < f32::EPSILON);
+
+    let fallback = parse_commit_analysis_value(&serde_json::json!({
+        "title": "chore: tidy"
+    }))
+    .expect("fallback commit analysis");
+    assert_eq!(fallback.commit_type, CommitType::Chore);
+    assert_eq!(fallback.confidence, 0.8);
+
+    let missing_title = parse_commit_analysis_value(&serde_json::json!({
+        "type": "fix"
+    }));
+    assert_eq!(missing_title.unwrap_err(), "Missing title field");
+}
+
+#[test]
 fn startchat_options_preserve_existing_defaults() {
     let options = WorkStateOptions::default();
 
@@ -236,6 +267,50 @@ fn startchat_action_helpers_preserve_limits_and_defaults() {
     assert_eq!(quick[0].action_type, QuickActionType::Continue);
     assert_eq!(quick[1].action_type, QuickActionType::ViewStatus);
     assert_eq!(quick[5].title, "Custom 2");
+}
+
+#[test]
+fn startchat_complete_analysis_parser_preserves_defaults_and_limits() {
+    let parsed = parse_complete_analysis_value(&serde_json::json!({
+        "summary": "Working on refactor boundaries.",
+        "predicted_actions": [
+            {"description": "Review changes", "priority": "High", "icon": "search", "is_reminder": true},
+            {"description": "Run tests", "priority": "Medium", "icon": "check"},
+            {"description": "Open PR", "priority": "Low", "icon": "git-pull-request"},
+            {"description": "Extra", "priority": "Low", "icon": "more"}
+        ],
+        "quick_actions": [
+            {"title": "Continue", "command": "/continue", "action_type": "Continue"},
+            {"title": "Status", "command": "/status", "action_type": "ViewStatus"},
+            {"title": "Commit", "command": "/commit", "action_type": "Commit"},
+            {"title": "Visualize", "command": "/visualize", "action_type": "Visualize"},
+            {"title": "Custom 1", "command": "one"},
+            {"title": "Custom 2", "command": "two"},
+            {"title": "Custom 3", "command": "three"}
+        ]
+    }));
+
+    assert_eq!(parsed.predicted_actions_count, 4);
+    assert_eq!(parsed.quick_actions_count, 7);
+    assert_eq!(parsed.analysis.summary, "Working on refactor boundaries.");
+    assert_eq!(parsed.analysis.predicted_actions.len(), 3);
+    assert_eq!(
+        parsed.analysis.predicted_actions[0].priority,
+        ActionPriority::High
+    );
+    assert!(parsed.analysis.predicted_actions[0].is_reminder);
+    assert_eq!(parsed.analysis.quick_actions.len(), 6);
+    assert_eq!(parsed.analysis.quick_actions[5].title, "Custom 2");
+
+    let fallback = parse_complete_analysis_value(&serde_json::json!({}));
+    assert_eq!(fallback.predicted_actions_count, 0);
+    assert_eq!(fallback.quick_actions_count, 0);
+    assert_eq!(
+        fallback.analysis.summary,
+        "You were working on development, with multiple files modified."
+    );
+    assert_eq!(fallback.analysis.predicted_actions.len(), 3);
+    assert!(fallback.analysis.quick_actions.is_empty());
 }
 
 #[test]

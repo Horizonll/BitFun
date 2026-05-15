@@ -26,8 +26,10 @@ use crate::miniapp::permission_policy::resolve_policy;
 use crate::miniapp::types::MiniAppPermissions;
 use crate::util::errors::{BitFunError, BitFunResult};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use bitfun_product_domains::miniapp::host_routing::command_basename_for_allowlist;
 pub use bitfun_product_domains::miniapp::host_routing::is_host_primitive;
+use bitfun_product_domains::miniapp::host_routing::{
+    command_basename_allowed, command_basename_for_allowlist, host_allowed_by_allowlist,
+};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -364,7 +366,7 @@ async fn dispatch_shell(
         None => command.split_whitespace().next().unwrap_or(""),
     };
     let base = command_basename_for_allowlist(first_token);
-    if !allow.is_empty() && !allow.iter().any(|a| a.to_lowercase() == base) {
+    if !command_basename_allowed(&allow, &base) {
         return Err(deny(format!("Command not in allowlist: {}", base)));
     }
 
@@ -485,12 +487,7 @@ async fn dispatch_net(policy: &Value, name: &str, params: &Value) -> BitFunResul
                 .collect()
         })
         .unwrap_or_default();
-    if !allow.is_empty()
-        && !allow.iter().any(|a| a == "*")
-        && !allow
-            .iter()
-            .any(|a| host == *a || host.ends_with(&format!(".{}", a)))
-    {
+    if !host_allowed_by_allowlist(&allow, &host) {
         return Err(deny(format!("Domain not in allowlist: {}", host)));
     }
 

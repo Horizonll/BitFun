@@ -240,3 +240,21 @@ pub fn parse_commit_type_label(label: &str) -> CommitType {
         _ => CommitType::Chore,
     }
 }
+
+pub fn parse_commit_analysis_value(value: &serde_json::Value) -> Result<AICommitAnalysis, String> {
+    Ok(AICommitAnalysis {
+        commit_type: parse_commit_type_label(value["type"].as_str().unwrap_or("chore")),
+        scope: value["scope"].as_str().map(|s| s.to_string()),
+        title: value["title"]
+            .as_str()
+            .ok_or_else(|| "Missing title field".to_string())?
+            .to_string(),
+        body: value["body"].as_str().map(|s| s.to_string()),
+        breaking_changes: value["breaking_changes"].as_str().map(|s| s.to_string()),
+        reasoning: value["reasoning"]
+            .as_str()
+            .unwrap_or("AI analysis")
+            .to_string(),
+        confidence: value["confidence"].as_f64().unwrap_or(0.8) as f32,
+    })
+}

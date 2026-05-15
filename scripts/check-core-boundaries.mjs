@@ -1488,6 +1488,70 @@ const requiredContentRules = [
     ],
   },
   {
+    path: 'src/crates/product-domains/src/miniapp/host_routing.rs',
+    reason:
+      'product-domains owns MiniApp host-routing and allowlist string policy while core keeps host execution',
+    patterns: [
+      {
+        regex: /\bpub fn command_basename_for_allowlist\b/,
+        message: 'missing MiniApp command basename allowlist helper',
+      },
+      {
+        regex: /\bpub fn command_basename_allowed\b/,
+        message: 'missing MiniApp command allowlist policy helper',
+      },
+      {
+        regex: /\bpub fn host_allowed_by_allowlist\b/,
+        message: 'missing MiniApp host allowlist policy helper',
+      },
+    ],
+  },
+  {
+    path: 'src/crates/product-domains/src/miniapp/customization.rs',
+    reason:
+      'product-domains owns MiniApp customization metadata and permission-diff contracts while core keeps draft storage/runtime',
+    patterns: [
+      {
+        regex: /\bpub struct MiniAppCustomizationMetadata\b/,
+        message: 'missing MiniApp customization metadata contract',
+      },
+      {
+        regex: /\bpub struct MiniAppPermissionDiff\b/,
+        message: 'missing MiniApp permission diff contract',
+      },
+      {
+        regex: /\bpub fn diff_permissions\b/,
+        message: 'missing MiniApp permission diff helper',
+      },
+    ],
+  },
+  {
+    path: 'src/crates/product-domains/src/function_agents/startchat_func_agent/utils.rs',
+    reason:
+      'product-domains owns pure Startchat function-agent parsing policy while core keeps AI calls and error mapping',
+    patterns: [
+      {
+        regex: /\bpub struct ParsedCompleteAnalysis\b/,
+        message: 'missing Startchat complete-analysis parse result contract',
+      },
+      {
+        regex: /\bpub fn parse_complete_analysis_value\b/,
+        message: 'missing Startchat complete-analysis value parser',
+      },
+    ],
+  },
+  {
+    path: 'src/crates/product-domains/src/function_agents/git_func_agent/utils.rs',
+    reason:
+      'product-domains owns pure Git function-agent response parsing policy while core keeps AI calls and error mapping',
+    patterns: [
+      {
+        regex: /\bpub fn parse_commit_analysis_value\b/,
+        message: 'missing Git function-agent commit analysis value parser',
+      },
+    ],
+  },
+  {
     path: 'src/crates/core/src/miniapp/js_worker_pool.rs',
     reason:
       'core must continue owning MiniApp worker runtime adapter until process/runtime migration is reviewed',
@@ -2043,6 +2107,30 @@ function runManifestParserSelfTest() {
     {
       path: 'src/crates/product-domains/src/miniapp/storage.rs',
       contracts: ['MiniAppStorageLayout', 'META_JSON', 'source_file_path', 'versions_dir'],
+    },
+    {
+      path: 'src/crates/product-domains/src/miniapp/host_routing.rs',
+      contracts: [
+        'command_basename_for_allowlist',
+        'command_basename_allowed',
+        'host_allowed_by_allowlist',
+      ],
+    },
+    {
+      path: 'src/crates/product-domains/src/miniapp/customization.rs',
+      contracts: [
+        'MiniAppCustomizationMetadata',
+        'MiniAppPermissionDiff',
+        'diff_permissions',
+      ],
+    },
+    {
+      path: 'src/crates/product-domains/src/function_agents/startchat_func_agent/utils.rs',
+      contracts: ['ParsedCompleteAnalysis', 'parse_complete_analysis_value'],
+    },
+    {
+      path: 'src/crates/product-domains/src/function_agents/git_func_agent/utils.rs',
+      contracts: ['parse_commit_analysis_value'],
     },
   ];
   for (const { path, contracts } of requiredContentContracts) {

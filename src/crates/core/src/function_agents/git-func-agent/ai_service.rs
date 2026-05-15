@@ -8,7 +8,6 @@ use crate::util::types::Message;
  * Handles AI client interaction and provides intelligent analysis for commit message generation
  */
 use log::{debug, error, warn};
-use serde_json::Value;
 use std::sync::Arc;
 
 /// Prompt template constants (embedded at compile time)
@@ -102,27 +101,11 @@ impl AIAnalysisService {
         let json_str = crate::util::extract_json_from_ai_response(response)
             .ok_or_else(|| AgentError::analysis_error("Cannot extract JSON from response"))?;
 
-        let value: Value = serde_json::from_str(&json_str).map_err(|e| {
+        let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
             AgentError::analysis_error(format!("Failed to parse AI response: {}", e))
         })?;
 
-        Ok(AICommitAnalysis {
-            commit_type: super::utils::parse_commit_type_label(
-                value["type"].as_str().unwrap_or("chore"),
-            ),
-            scope: value["scope"].as_str().map(|s| s.to_string()),
-            title: value["title"]
-                .as_str()
-                .ok_or_else(|| AgentError::analysis_error("Missing title field"))?
-                .to_string(),
-            body: value["body"].as_str().map(|s| s.to_string()),
-            breaking_changes: value["breaking_changes"].as_str().map(|s| s.to_string()),
-            reasoning: value["reasoning"]
-                .as_str()
-                .unwrap_or("AI analysis")
-                .to_string(),
-            confidence: value["confidence"].as_f64().unwrap_or(0.8) as f32,
-        })
+        super::utils::parse_commit_analysis_value(&value).map_err(AgentError::analysis_error)
     }
 
     fn truncate_diff_if_needed(&self, diff: &str, max_chars: usize) -> String {
