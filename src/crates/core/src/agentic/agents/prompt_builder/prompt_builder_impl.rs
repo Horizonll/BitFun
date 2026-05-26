@@ -23,7 +23,7 @@ const PLACEHOLDER_CLAW_WORKSPACE: &str = "{CLAW_WORKSPACE}";
 const PLACEHOLDER_VISUAL_MODE: &str = "{VISUAL_MODE}";
 const PLACEHOLDER_SESSION_ID: &str = "{SESSION_ID}";
 const USER_CONTEXT_PROMPT: &str =
-    "As you answer the user's questions, you can use the following context";
+    "As you answer the user's questions, you can use the following context.\nNote: this is a snapshot captured at the start of the conversation and may not reflect real-time changes made afterward.";
 const SKILL_LISTING_TITLE: &str = "# Skill Listing";
 const SKILL_LISTING_GUIDANCE: &str =
     "The following skills are available for use with the Skill tool:";

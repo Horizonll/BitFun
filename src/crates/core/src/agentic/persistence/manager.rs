@@ -6,14 +6,16 @@ use crate::agentic::core::{
     strip_prompt_markup, CompressionState, Message, MessageContent, Session, SessionConfig,
     SessionKind, SessionState, SessionSummary,
 };
+use crate::agentic::session::{SessionPromptCache, PROMPT_CACHE_SCHEMA_VERSION};
 use crate::infrastructure::PathManager;
 use crate::service::remote_ssh::workspace_state::{
     resolve_workspace_session_identity, LOCAL_WORKSPACE_SSH_HOST,
 };
 use crate::service::session::{
-    DialogTurnData, SessionMetadata, SessionRelationship, SessionRelationshipKind, SessionStatus, SessionTranscriptExport,
-    SessionTranscriptExportOptions, SessionTranscriptIndexEntry, StoredSessionIndexFile,
-    StoredSessionMetadataFile, ToolItemData, TranscriptLineRange, SESSION_STORAGE_SCHEMA_VERSION,
+    DialogTurnData, SessionMetadata, SessionRelationship, SessionRelationshipKind, SessionStatus,
+    SessionTranscriptExport, SessionTranscriptExportOptions, SessionTranscriptIndexEntry,
+    StoredSessionIndexFile, StoredSessionMetadataFile, ToolItemData, TranscriptLineRange,
+    SESSION_STORAGE_SCHEMA_VERSION,
 };
 use crate::service::workspace_runtime::WorkspaceRuntimeService;
 use crate::util::errors::{BitFunError, BitFunResult};
@@ -56,6 +58,13 @@ struct StoredSessionStateFile {
     last_user_dialog_agent_type: Option<String>,
     compression_state: CompressionState,
     runtime_state: SessionState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredSessionPromptCacheFile {
+    schema_version: u32,
+    #[serde(flatten)]
+    cache: SessionPromptCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,6 +392,11 @@ impl PersistenceManager {
     fn state_path(&self, workspace_path: &Path, session_id: &str) -> PathBuf {
         self.session_dir(workspace_path, session_id)
             .join("state.json")
+    }
+
+    fn prompt_cache_path(&self, workspace_path: &Path, session_id: &str) -> PathBuf {
+        self.session_dir(workspace_path, session_id)
+            .join("prompt_cache.json")
     }
 
     fn turns_dir(&self, workspace_path: &Path, session_id: &str) -> PathBuf {
@@ -1690,6 +1704,53 @@ impl PersistenceManager {
     ) -> BitFunResult<()> {
         self.write_json_atomic(&self.state_path(workspace_path, session_id), state)
             .await
+    }
+
+    pub async fn load_prompt_cache(
+        &self,
+        workspace_path: &Path,
+        session_id: &str,
+    ) -> BitFunResult<Option<SessionPromptCache>> {
+        Ok(self
+            .read_json_optional::<StoredSessionPromptCacheFile>(
+                &self.prompt_cache_path(workspace_path, session_id),
+            )
+            .await?
+            .map(|file| file.cache))
+    }
+
+    pub async fn save_prompt_cache(
+        &self,
+        workspace_path: &Path,
+        session_id: &str,
+        cache: &SessionPromptCache,
+    ) -> BitFunResult<()> {
+        self.ensure_runtime_for_write(workspace_path).await?;
+        self.ensure_session_dir(workspace_path, session_id).await?;
+
+        self.write_json_atomic(
+            &self.prompt_cache_path(workspace_path, session_id),
+            &StoredSessionPromptCacheFile {
+                schema_version: PROMPT_CACHE_SCHEMA_VERSION,
+                cache: cache.clone(),
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_prompt_cache(
+        &self,
+        workspace_path: &Path,
+        session_id: &str,
+    ) -> BitFunResult<()> {
+        match fs::remove_file(self.prompt_cache_path(workspace_path, session_id)).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(BitFunError::io(format!(
+                "Failed to delete prompt cache for session {}: {}",
+                session_id, error
+            ))),
+        }
     }
 
     // ============ Turn context snapshot (sent to model)============

@@ -696,6 +696,78 @@ impl ExecutionEngine {
         ))
     }
 
+    async fn build_cached_prepended_prompt_reminders(
+        &self,
+        session_id: &str,
+        current_agent: &dyn crate::agentic::agents::Agent,
+        prompt_context: Option<&PromptBuilderContext>,
+    ) -> PrependedPromptReminders {
+        let Some(prompt_context) = prompt_context.cloned() else {
+            return PrependedPromptReminders::default();
+        };
+
+        let prompt_builder = PromptBuilder::new(prompt_context);
+        let user_context = if let Some(cached_user_context) =
+            self.session_manager.cached_user_context(session_id).await
+        {
+            debug!("User context cache hit: session_id={}", session_id);
+            Some(cached_user_context)
+        } else {
+            debug!("User context cache miss: session_id={}", session_id);
+            let built_user_context = prompt_builder
+                .build_user_context_reminder(&current_agent.user_context_policy())
+                .await;
+            if let Some(ref user_context) = built_user_context {
+                self.session_manager
+                    .remember_user_context(session_id, user_context.clone())
+                    .await;
+            }
+            built_user_context
+        };
+
+        PrependedPromptReminders {
+            skill_listing: prompt_builder.build_skill_listing_reminder(),
+            agent_listing: prompt_builder.build_agent_listing_reminder(),
+            collapsed_tool_listing: prompt_builder.build_collapsed_tool_listing_reminder(),
+            user_context,
+        }
+    }
+
+    async fn resolve_cached_system_prompt(
+        &self,
+        session_id: &str,
+        current_agent: &dyn crate::agentic::agents::Agent,
+        prompt_context: Option<&PromptBuilderContext>,
+    ) -> BitFunResult<String> {
+        let identity = prompt_context
+            .map(|context| {
+                current_agent.system_prompt_cache_identity(context.model_name.as_deref())
+            })
+            .unwrap_or_else(|| current_agent.system_prompt_cache_identity(None));
+
+        if let Some(cached_system_prompt) = self
+            .session_manager
+            .cached_system_prompt(session_id, &identity)
+            .await
+        {
+            debug!(
+                "System prompt cache hit: session_id={}, agent_id={}, prompt_identity={}",
+                session_id, identity.agent_id, identity.prompt_identity
+            );
+            return Ok(cached_system_prompt);
+        }
+
+        debug!(
+            "System prompt cache miss: session_id={}, agent_id={}, prompt_identity={}",
+            session_id, identity.agent_id, identity.prompt_identity
+        );
+        let system_prompt = current_agent.get_system_prompt(prompt_context).await?;
+        self.session_manager
+            .remember_system_prompt(session_id, identity, system_prompt.clone())
+            .await;
+        Ok(system_prompt)
+    }
+
     pub(crate) async fn resolve_model_id_for_turn(
         &self,
         session: &Session,
@@ -1139,6 +1211,13 @@ impl ExecutionEngine {
                 self.session_manager
                     .replace_context_messages(session_id, compression_result.messages.clone())
                     .await;
+                self.session_manager
+                    .invalidate_prompt_cache(
+                        session_id,
+                        crate::agentic::session::PromptCacheScope::All,
+                        "context_compression_applied",
+                    )
+                    .await;
                 let mut new_messages = vec![system_prompt_message];
                 new_messages.extend(compression_result.messages);
                 // Update session compression state
@@ -1322,6 +1401,13 @@ impl ExecutionEngine {
                 let mut compressed_messages = compression_result.messages;
                 self.session_manager
                     .replace_context_messages(session_id, compressed_messages.clone())
+                    .await;
+                self.session_manager
+                    .invalidate_prompt_cache(
+                        session_id,
+                        crate::agentic::session::PromptCacheScope::All,
+                        "manual_context_compaction_applied",
+                    )
                     .await;
 
                 session.compression_state.increment_compression_count();
@@ -1682,16 +1768,20 @@ impl ExecutionEngine {
             tool_listing_sections,
         )
         .await;
-        let prepended_prompt_reminders = if let Some(prompt_context) = prompt_context.as_ref() {
-            PromptBuilder::new(prompt_context.clone())
-                .build_prepended_reminders(&current_agent.user_context_policy())
-                .await
-        } else {
-            PrependedPromptReminders::default()
-        };
+        let prepended_prompt_reminders = self
+            .build_cached_prepended_prompt_reminders(
+                &context.session_id,
+                current_agent.as_ref(),
+                prompt_context.as_ref(),
+            )
+            .await;
         let prepended_reminders = prepended_prompt_reminders.ordered_reminders();
-        let system_prompt = current_agent
-            .get_system_prompt(prompt_context.as_ref())
+        let system_prompt = self
+            .resolve_cached_system_prompt(
+                &context.session_id,
+                current_agent.as_ref(),
+                prompt_context.as_ref(),
+            )
             .await?;
         debug!("System prompt built, length: {} bytes", system_prompt.len());
         debug!(

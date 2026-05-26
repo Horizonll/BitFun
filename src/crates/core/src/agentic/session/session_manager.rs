@@ -9,9 +9,11 @@ use crate::agentic::core::{
 use crate::agentic::image_analysis::ImageContextData;
 use crate::agentic::persistence::PersistenceManager;
 use crate::agentic::session::{
-    EvidenceLedgerCheckpoint, EvidenceLedgerEvent, EvidenceLedgerEventStatus,
-    EvidenceLedgerSummary, EvidenceLedgerTargetKind, FileReadState, FileReadStateStore,
-    SessionContextStore, SessionEvidenceLedger,
+    CachedPromptText, CachedSystemPrompt, EvidenceLedgerCheckpoint, EvidenceLedgerEvent,
+    EvidenceLedgerEventStatus, EvidenceLedgerSummary, EvidenceLedgerTargetKind, FileReadState,
+    FileReadStateStore, PromptCacheLookup, PromptCachePolicy, PromptCacheScope,
+    SessionContextStore, SessionEvidenceLedger, SessionPromptCache, SessionPromptCacheStore,
+    SystemPromptCacheIdentity,
 };
 use crate::infrastructure::ai::get_global_ai_client_factory;
 use crate::service::config::{
@@ -44,6 +46,7 @@ pub struct SessionManagerConfig {
     pub session_idle_timeout: Duration,
     pub auto_save_interval: Duration,
     pub enable_persistence: bool,
+    pub prompt_cache_policy: PromptCachePolicy,
 }
 
 impl Default for SessionManagerConfig {
@@ -53,6 +56,7 @@ impl Default for SessionManagerConfig {
             session_idle_timeout: Duration::from_secs(3600), // 1 hour
             auto_save_interval: Duration::from_secs(300),    // 5 minutes
             enable_persistence: true,
+            prompt_cache_policy: PromptCachePolicy::default(),
         }
     }
 }
@@ -91,6 +95,7 @@ pub struct SessionManager {
 
     /// Sub-components
     context_store: Arc<SessionContextStore>,
+    prompt_cache_store: Arc<SessionPromptCacheStore>,
     file_read_state_store: Arc<FileReadStateStore>,
     evidence_ledger: Arc<SessionEvidenceLedger>,
     persistence_manager: Arc<PersistenceManager>,
@@ -115,8 +120,7 @@ struct SessionCleanupCandidate {
 }
 
 impl SessionManager {
-    async fn load_ai_config_for_model_resolution()
-        -> Option<crate::service::config::types::AIConfig>
+    async fn load_ai_config_for_model_resolution() -> Option<crate::service::config::types::AIConfig>
     {
         let config_service = get_global_config_service().await.ok()?;
         config_service.get_config(Some("ai")).await.ok()
@@ -677,6 +681,113 @@ impl SessionManager {
             .await;
     }
 
+    async fn ensure_prompt_cache_loaded(&self, session_id: &str) {
+        if self.prompt_cache_store.has_session(session_id) {
+            return;
+        }
+
+        let cache = if self.should_persist_session_id(session_id) {
+            match self.effective_session_workspace_path(session_id).await {
+                Some(workspace_path) => {
+                    match self
+                        .load_prompt_cache_from_persistence(&workspace_path, session_id)
+                        .await
+                    {
+                        Ok(Some(cache)) => cache,
+                        Ok(None) => SessionPromptCache::default(),
+                        Err(error) => {
+                            warn!(
+                                "Failed to load prompt cache: session_id={}, workspace_path={}, error={}",
+                                session_id,
+                                workspace_path.display(),
+                                error
+                            );
+                            SessionPromptCache::default()
+                        }
+                    }
+                }
+                None => SessionPromptCache::default(),
+            }
+        } else {
+            SessionPromptCache::default()
+        };
+
+        self.prompt_cache_store.replace_cache(session_id, cache);
+    }
+
+    async fn load_prompt_cache_from_persistence(
+        &self,
+        workspace_path: &Path,
+        session_id: &str,
+    ) -> BitFunResult<Option<SessionPromptCache>> {
+        let mut cache = match self
+            .persistence_manager
+            .load_prompt_cache(workspace_path, session_id)
+            .await?
+        {
+            Some(cache) => cache,
+            None => return Ok(None),
+        };
+
+        let expired_entries_removed =
+            cache.apply_persistence_ttl(self.config.prompt_cache_policy.persistence_ttl);
+
+        if !expired_entries_removed {
+            return Ok(Some(cache));
+        }
+
+        if cache.is_empty() {
+            self.persistence_manager
+                .delete_prompt_cache(workspace_path, session_id)
+                .await?;
+            Ok(None)
+        } else {
+            self.persistence_manager
+                .save_prompt_cache(workspace_path, session_id, &cache)
+                .await?;
+            Ok(Some(cache))
+        }
+    }
+
+    async fn persist_prompt_cache_best_effort(&self, session_id: &str, reason: &str) {
+        if !self.should_persist_session_id(session_id) {
+            return;
+        }
+
+        let Some(workspace_path) = self.effective_session_workspace_path(session_id).await else {
+            debug!(
+                "Skipping prompt cache persistence because workspace path is unavailable: session_id={}, reason={}",
+                session_id, reason
+            );
+            return;
+        };
+
+        let cache = self
+            .prompt_cache_store
+            .get_cache(session_id)
+            .unwrap_or_default();
+
+        let persist_result = if cache.system_prompt.is_none() && cache.user_context.is_none() {
+            self.persistence_manager
+                .delete_prompt_cache(&workspace_path, session_id)
+                .await
+        } else {
+            self.persistence_manager
+                .save_prompt_cache(&workspace_path, session_id, &cache)
+                .await
+        };
+
+        if let Err(error) = persist_result {
+            warn!(
+                "Failed to persist prompt cache: session_id={}, workspace_path={}, reason={}, error={}",
+                session_id,
+                workspace_path.display(),
+                reason,
+                error
+            );
+        }
+    }
+
     pub fn new(
         context_store: Arc<SessionContextStore>,
         persistence_manager: Arc<PersistenceManager>,
@@ -688,6 +799,7 @@ impl SessionManager {
             sessions: Arc::new(DashMap::new()),
             session_workspace_index: Arc::new(DashMap::new()),
             context_store,
+            prompt_cache_store: Arc::new(SessionPromptCacheStore::new()),
             file_read_state_store: Arc::new(FileReadStateStore::new()),
             evidence_ledger: Arc::new(SessionEvidenceLedger::new()),
             persistence_manager,
@@ -874,6 +986,7 @@ impl SessionManager {
         let sessions = self.sessions.clone();
         let session_workspace_index = self.session_workspace_index.clone();
         let context_store = self.context_store.clone();
+        let prompt_cache_store = self.prompt_cache_store.clone();
         let file_read_state_store = self.file_read_state_store.clone();
         let evidence_ledger = self.evidence_ledger.clone();
         let persistence_manager = self.persistence_manager.clone();
@@ -894,6 +1007,7 @@ impl SessionManager {
                 sessions,
                 session_workspace_index,
                 context_store,
+                prompt_cache_store,
                 file_read_state_store,
                 evidence_ledger,
                 persistence_manager,
@@ -1052,6 +1166,89 @@ impl SessionManager {
     /// Get session
     pub fn get_session(&self, session_id: &str) -> Option<Session> {
         self.sessions.get(session_id).map(|s| s.clone())
+    }
+
+    pub async fn cached_system_prompt(
+        &self,
+        session_id: &str,
+        identity: &SystemPromptCacheIdentity,
+    ) -> Option<String> {
+        self.ensure_prompt_cache_loaded(session_id).await;
+        match self.prompt_cache_store.lookup_system_prompt(
+            session_id,
+            identity,
+            self.config.prompt_cache_policy.cache_ttl,
+        ) {
+            PromptCacheLookup::Hit(prompt) => Some(prompt),
+            PromptCacheLookup::Miss => None,
+            PromptCacheLookup::Expired => {
+                self.persist_prompt_cache_best_effort(
+                    session_id,
+                    "system_prompt_cache_expired_cleanup",
+                )
+                .await;
+                None
+            }
+        }
+    }
+
+    pub async fn remember_system_prompt(
+        &self,
+        session_id: &str,
+        identity: SystemPromptCacheIdentity,
+        prompt: String,
+    ) {
+        self.ensure_prompt_cache_loaded(session_id).await;
+        self.prompt_cache_store
+            .set_system_prompt(session_id, CachedSystemPrompt::new(identity, prompt));
+        self.persist_prompt_cache_best_effort(session_id, "system_prompt_cached")
+            .await;
+    }
+
+    pub async fn cached_user_context(&self, session_id: &str) -> Option<String> {
+        self.ensure_prompt_cache_loaded(session_id).await;
+        match self
+            .prompt_cache_store
+            .lookup_user_context(session_id, self.config.prompt_cache_policy.cache_ttl)
+        {
+            PromptCacheLookup::Hit(user_context) => Some(user_context),
+            PromptCacheLookup::Miss => None,
+            PromptCacheLookup::Expired => {
+                self.persist_prompt_cache_best_effort(
+                    session_id,
+                    "user_context_cache_expired_cleanup",
+                )
+                .await;
+                None
+            }
+        }
+    }
+
+    pub async fn remember_user_context(&self, session_id: &str, user_context: String) {
+        self.ensure_prompt_cache_loaded(session_id).await;
+        self.prompt_cache_store
+            .set_user_context(session_id, CachedPromptText::new(user_context));
+        self.persist_prompt_cache_best_effort(session_id, "user_context_cached")
+            .await;
+    }
+
+    pub async fn invalidate_prompt_cache(
+        &self,
+        session_id: &str,
+        scope: PromptCacheScope,
+        reason: &str,
+    ) {
+        self.ensure_prompt_cache_loaded(session_id).await;
+        let changed = self.prompt_cache_store.invalidate(session_id, scope);
+
+        if changed {
+            debug!(
+                "Invalidated session prompt cache: session_id={}, scope={:?}, reason={}",
+                session_id, scope, reason
+            );
+            self.persist_prompt_cache_best_effort(session_id, reason)
+                .await;
+        }
     }
 
     /// Synchronously reset session state to Idle if it is currently Processing
@@ -1434,6 +1631,7 @@ impl SessionManager {
             session_id
         );
         self.context_store.delete_session(session_id);
+        self.prompt_cache_store.delete_session(session_id);
         self.file_read_state_store.delete_session(session_id);
         debug!(
             "Session deletion stage completed: session_id={}, stage=context_store_delete, duration_ms={}",
@@ -1881,6 +2079,7 @@ impl SessionManager {
         // If session already exists, delete old one first then create (ensure clean state)
         if session_already_in_memory {
             self.context_store.delete_session(session_id);
+            self.prompt_cache_store.delete_session(session_id);
             self.file_read_state_store.delete_session(session_id);
         }
 
@@ -2145,19 +2344,26 @@ impl SessionManager {
                     .sessions
                     .get(session_id)
                     .map(|value| value.clone())
-                    .ok_or_else(|| BitFunError::NotFound(format!("Session not found: {}", session_id)))?;
+                    .ok_or_else(|| {
+                        BitFunError::NotFound(format!("Session not found: {}", session_id))
+                    })?;
                 self.persistence_manager
                     .save_session(&workspace_path, &session)
                     .await?;
                 self.persistence_manager
                     .load_session_metadata(&workspace_path, session_id)
                     .await?
-                    .ok_or_else(|| BitFunError::NotFound(format!("Session not found: {}", session_id)))?
+                    .ok_or_else(|| {
+                        BitFunError::NotFound(format!("Session not found: {}", session_id))
+                    })?
             }
         };
 
         metadata.custom_metadata = Some(match (metadata.custom_metadata.take(), patch) {
-            (Some(serde_json::Value::Object(mut existing)), serde_json::Value::Object(patch_obj)) => {
+            (
+                Some(serde_json::Value::Object(mut existing)),
+                serde_json::Value::Object(patch_obj),
+            ) => {
                 for (key, value) in patch_obj {
                     existing.insert(key, value);
                 }
@@ -2201,14 +2407,18 @@ impl SessionManager {
                     .sessions
                     .get(session_id)
                     .map(|value| value.clone())
-                    .ok_or_else(|| BitFunError::NotFound(format!("Session not found: {}", session_id)))?;
+                    .ok_or_else(|| {
+                        BitFunError::NotFound(format!("Session not found: {}", session_id))
+                    })?;
                 self.persistence_manager
                     .save_session(&workspace_path, &session)
                     .await?;
                 self.persistence_manager
                     .load_session_metadata(&workspace_path, session_id)
                     .await?
-                    .ok_or_else(|| BitFunError::NotFound(format!("Session not found: {}", session_id)))?
+                    .ok_or_else(|| {
+                        BitFunError::NotFound(format!("Session not found: {}", session_id))
+                    })?
             }
         };
 
@@ -2248,20 +2458,26 @@ impl SessionManager {
                     .sessions
                     .get(session_id)
                     .map(|value| value.clone())
-                    .ok_or_else(|| BitFunError::NotFound(format!("Session not found: {}", session_id)))?;
+                    .ok_or_else(|| {
+                        BitFunError::NotFound(format!("Session not found: {}", session_id))
+                    })?;
                 self.persistence_manager
                     .save_session(&workspace_path, &session)
                     .await?;
                 self.persistence_manager
                     .load_session_metadata(&workspace_path, session_id)
                     .await?
-                    .ok_or_else(|| BitFunError::NotFound(format!("Session not found: {}", session_id)))?
+                    .ok_or_else(|| {
+                        BitFunError::NotFound(format!("Session not found: {}", session_id))
+                    })?
             }
         };
 
         metadata.relationship = Some(relationship);
 
-        if let Some(serde_json::Value::Object(mut custom_metadata)) = metadata.custom_metadata.take() {
+        if let Some(serde_json::Value::Object(mut custom_metadata)) =
+            metadata.custom_metadata.take()
+        {
             for key in [
                 "kind",
                 "parentSessionId",
@@ -2273,8 +2489,8 @@ impl SessionManager {
             ] {
                 custom_metadata.remove(key);
             }
-            metadata.custom_metadata = (!custom_metadata.is_empty())
-                .then_some(serde_json::Value::Object(custom_metadata));
+            metadata.custom_metadata =
+                (!custom_metadata.is_empty()).then_some(serde_json::Value::Object(custom_metadata));
         }
 
         self.persistence_manager
@@ -2392,14 +2608,18 @@ impl SessionManager {
                     .sessions
                     .get(session_id)
                     .map(|value| value.clone())
-                    .ok_or_else(|| BitFunError::NotFound(format!("Session not found: {}", session_id)))?;
+                    .ok_or_else(|| {
+                        BitFunError::NotFound(format!("Session not found: {}", session_id))
+                    })?;
                 self.persistence_manager
                     .save_session(&workspace_path, &session)
                     .await?;
                 self.persistence_manager
                     .load_session_metadata(&workspace_path, session_id)
                     .await?
-                    .ok_or_else(|| BitFunError::NotFound(format!("Session not found: {}", session_id)))?
+                    .ok_or_else(|| {
+                        BitFunError::NotFound(format!("Session not found: {}", session_id))
+                    })?
             }
         };
 
@@ -3229,12 +3449,7 @@ impl SessionManager {
             .await;
     }
 
-    pub fn set_file_read_state(
-        &self,
-        session_id: &str,
-        logical_path: &str,
-        state: FileReadState,
-    ) {
+    pub fn set_file_read_state(&self, session_id: &str, logical_path: &str, state: FileReadState) {
         self.file_read_state_store
             .set(session_id, logical_path, state);
     }
@@ -3482,6 +3697,7 @@ impl SessionManager {
         let persistence = self.persistence_manager.clone();
         let enable_persistence = self.config.enable_persistence;
         let context_store = self.context_store.clone();
+        let prompt_cache_store = self.prompt_cache_store.clone();
         let file_read_state_store = self.file_read_state_store.clone();
 
         tokio::spawn(async move {
@@ -3539,6 +3755,7 @@ impl SessionManager {
                         .is_some()
                     {
                         context_store.delete_session(&candidate.session_id);
+                        prompt_cache_store.delete_session(&candidate.session_id);
                         file_read_state_store.delete_session(&candidate.session_id);
                     }
                 }
@@ -3593,7 +3810,9 @@ mod tests {
     use super::{SessionManager, SessionManagerConfig};
     use crate::agentic::core::{Message, ProcessingPhase, Session, SessionConfig, SessionState};
     use crate::agentic::persistence::PersistenceManager;
-    use crate::agentic::session::SessionContextStore;
+    use crate::agentic::session::{
+        PromptCachePolicy, PromptCacheScope, SessionContextStore, SystemPromptCacheIdentity,
+    };
     use crate::infrastructure::PathManager;
     use crate::service::config::types::{
         AIConfig as ServiceAIConfig, AIModelConfig as ServiceAIModelConfig,
@@ -3650,7 +3869,19 @@ mod tests {
                 session_idle_timeout: Duration::from_secs(3600),
                 auto_save_interval: Duration::from_secs(300),
                 enable_persistence: true,
+                prompt_cache_policy: PromptCachePolicy::default(),
             },
+        )
+    }
+
+    fn test_manager_with_config(
+        persistence_manager: Arc<PersistenceManager>,
+        config: SessionManagerConfig,
+    ) -> SessionManager {
+        SessionManager::new(
+            Arc::new(SessionContextStore::new()),
+            persistence_manager,
+            config,
         )
     }
 
@@ -3667,6 +3898,7 @@ mod tests {
                 session_idle_timeout: Duration::from_secs(3600),
                 auto_save_interval: Duration::from_secs(300),
                 enable_persistence: false,
+                prompt_cache_policy: PromptCachePolicy::default(),
             },
         )
     }
@@ -4036,7 +4268,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persist_session_lineage_updates_structured_relationship_and_clears_legacy_projection() {
+    async fn persist_session_lineage_updates_structured_relationship_and_clears_legacy_projection()
+    {
         let workspace = TestWorkspace::new();
         let persistence_manager = Arc::new(
             PersistenceManager::new(workspace.path_manager()).expect("persistence manager"),
@@ -4733,5 +4966,204 @@ mod tests {
         let summary = manager.evidence_summary_for_session("session-a", 10);
         assert_eq!(summary.partial_subagent_results.len(), 1);
         assert_eq!(summary.partial_subagent_results[0].event_id, event.event_id);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_persists_across_session_restore() {
+        let workspace = TestWorkspace::new();
+        let persistence_manager =
+            Arc::new(PersistenceManager::new(workspace.path_manager()).expect("persistence"));
+        let manager = test_manager(persistence_manager.clone());
+        let workspace_path = workspace.path().to_string_lossy().to_string();
+        let session = manager
+            .create_session(
+                "Prompt cache".to_string(),
+                "agentic".to_string(),
+                SessionConfig {
+                    workspace_path: Some(workspace_path),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("session should be created");
+        let identity = SystemPromptCacheIdentity::new("agentic", "template:agentic_mode");
+
+        manager
+            .remember_system_prompt(
+                &session.session_id,
+                identity.clone(),
+                "cached system prompt".to_string(),
+            )
+            .await;
+        manager
+            .remember_user_context(&session.session_id, "cached user context".to_string())
+            .await;
+
+        let restored_manager = test_manager(persistence_manager);
+        restored_manager
+            .restore_session(workspace.path(), &session.session_id)
+            .await
+            .expect("session should restore");
+
+        assert_eq!(
+            restored_manager
+                .cached_system_prompt(&session.session_id, &identity)
+                .await,
+            Some("cached system prompt".to_string())
+        );
+        assert_eq!(
+            restored_manager
+                .cached_user_context(&session.session_id)
+                .await,
+            Some("cached user context".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_invalidation_removes_persisted_entries() {
+        let workspace = TestWorkspace::new();
+        let persistence_manager =
+            Arc::new(PersistenceManager::new(workspace.path_manager()).expect("persistence"));
+        let manager = test_manager(persistence_manager.clone());
+        let workspace_path = workspace.path().to_string_lossy().to_string();
+        let session = manager
+            .create_session(
+                "Prompt cache".to_string(),
+                "agentic".to_string(),
+                SessionConfig {
+                    workspace_path: Some(workspace_path),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("session should be created");
+        let identity = SystemPromptCacheIdentity::new("agentic", "template:agentic_mode");
+
+        manager
+            .remember_system_prompt(
+                &session.session_id,
+                identity.clone(),
+                "cached system prompt".to_string(),
+            )
+            .await;
+        manager
+            .remember_user_context(&session.session_id, "cached user context".to_string())
+            .await;
+
+        manager
+            .invalidate_prompt_cache(&session.session_id, PromptCacheScope::All, "test")
+            .await;
+
+        let restored_manager = test_manager(persistence_manager.clone());
+        restored_manager
+            .restore_session(workspace.path(), &session.session_id)
+            .await
+            .expect("session should restore");
+
+        assert_eq!(
+            restored_manager
+                .cached_system_prompt(&session.session_id, &identity)
+                .await,
+            None
+        );
+        assert_eq!(
+            restored_manager
+                .cached_user_context(&session.session_id)
+                .await,
+            None
+        );
+        assert_eq!(
+            persistence_manager
+                .load_prompt_cache(workspace.path(), &session.session_id)
+                .await
+                .expect("prompt cache load should succeed"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_persistence_ttl_only_affects_cold_start_restore() {
+        let workspace = TestWorkspace::new();
+        let persistence_manager =
+            Arc::new(PersistenceManager::new(workspace.path_manager()).expect("persistence"));
+        let manager = test_manager_with_config(
+            persistence_manager.clone(),
+            SessionManagerConfig {
+                max_active_sessions: 100,
+                session_idle_timeout: Duration::from_secs(3600),
+                auto_save_interval: Duration::from_secs(300),
+                enable_persistence: true,
+                prompt_cache_policy: PromptCachePolicy {
+                    cache_ttl: None,
+                    persistence_ttl: Some(Duration::from_millis(0)),
+                },
+            },
+        );
+        let workspace_path = workspace.path().to_string_lossy().to_string();
+        let session = manager
+            .create_session(
+                "Prompt cache".to_string(),
+                "agentic".to_string(),
+                SessionConfig {
+                    workspace_path: Some(workspace_path),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("session should be created");
+        let identity = SystemPromptCacheIdentity::new("agentic", "template:agentic_mode");
+
+        manager
+            .remember_system_prompt(
+                &session.session_id,
+                identity.clone(),
+                "cached system prompt".to_string(),
+            )
+            .await;
+        manager
+            .remember_user_context(&session.session_id, "cached user context".to_string())
+            .await;
+
+        assert_eq!(
+            manager
+                .cached_system_prompt(&session.session_id, &identity)
+                .await,
+            Some("cached system prompt".to_string())
+        );
+        assert_eq!(
+            manager.cached_user_context(&session.session_id).await,
+            Some("cached user context".to_string())
+        );
+
+        let restored_manager = test_manager_with_config(
+            persistence_manager.clone(),
+            SessionManagerConfig {
+                max_active_sessions: 100,
+                session_idle_timeout: Duration::from_secs(3600),
+                auto_save_interval: Duration::from_secs(300),
+                enable_persistence: true,
+                prompt_cache_policy: PromptCachePolicy {
+                    cache_ttl: None,
+                    persistence_ttl: Some(Duration::from_millis(0)),
+                },
+            },
+        );
+        restored_manager
+            .restore_session(workspace.path(), &session.session_id)
+            .await
+            .expect("session should restore");
+
+        assert_eq!(
+            restored_manager
+                .cached_system_prompt(&session.session_id, &identity)
+                .await,
+            None
+        );
+        assert_eq!(
+            restored_manager
+                .cached_user_context(&session.session_id)
+                .await,
+            None
+        );
     }
 }

@@ -10,6 +10,7 @@ mod registry;
 // consecutive `[N]` display IDs after the dialog turn completes.
 pub(crate) mod citation_renumber;
 
+use crate::agentic::session::SystemPromptCacheIdentity;
 use crate::agentic::tools::framework::ToolExposure;
 use crate::agentic::WorkspaceBinding;
 use crate::util::errors::{BitFunError, BitFunResult};
@@ -94,6 +95,17 @@ pub trait Agent: Send + Sync + 'static {
 
     /// Prompt template name for the agent.
     fn prompt_template_name(&self, model_name: Option<&str>) -> &str;
+
+    fn system_prompt_cache_identity(&self, model_name: Option<&str>) -> SystemPromptCacheIdentity {
+        let template_name = self.prompt_template_name(model_name).trim();
+        let prompt_identity = if template_name.is_empty() {
+            format!("agent:{}", self.id())
+        } else {
+            format!("template:{}", template_name)
+        };
+
+        SystemPromptCacheIdentity::new(self.id(), prompt_identity)
+    }
 
     fn system_reminder_template_name(&self) -> Option<&str> {
         None // by default, no system reminder
