@@ -3,7 +3,7 @@ import PairingPage from './pages/PairingPage';
 import WorkspacePage from './pages/WorkspacePage';
 import SessionListPage from './pages/SessionListPage';
 import ChatPage from './pages/ChatPage';
-import { I18nProvider } from './i18n';
+import { I18nProvider, useI18n } from './i18n';
 import { RelayHttpClient } from './services/RelayHttpClient';
 import { RemoteSessionManager } from './services/RemoteSessionManager';
 import { ThemeProvider } from './theme';
@@ -29,10 +29,12 @@ function getNavClass(
 }
 
 const AppContent: React.FC = () => {
+  const { t } = useI18n();
   const [page, setPage] = useState<Page>('pairing');
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeSessionName, setActiveSessionName] = useState<string>('Session');
   const [chatAutoFocus, setChatAutoFocus] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const clientRef = useRef<RelayHttpClient | null>(null);
   const sessionMgrRef = useRef<RemoteSessionManager | null>(null);
 
@@ -109,6 +111,28 @@ const AppContent: React.FC = () => {
     [],
   );
 
+  // Periodic connection health check
+  useEffect(() => {
+    const mgr = sessionMgrRef.current;
+    if (!mgr) {
+      setIsReconnecting(false);
+      return;
+    }
+
+    let timer: ReturnType<typeof setInterval>;
+    const check = async () => {
+      try {
+        await mgr.ping();
+        setIsReconnecting(false);
+      } catch {
+        setIsReconnecting(true);
+      }
+    };
+    check();
+    timer = setInterval(check, 15000);
+    return () => clearInterval(timer);
+  }, [page === 'sessions' || page === 'chat' ? sessionMgrRef.current : null]);
+
   // Pop navigation handlers that can be called from both UI buttons and popstate
   const doPopFromChat = useCallback(() => {
     navigateTo('sessions', 'pop');
@@ -174,6 +198,12 @@ const AppContent: React.FC = () => {
 
   return (
     <div className="mobile-app">
+      {isReconnecting && (
+        <div className="mobile-reconnect-banner">
+          <span className="mobile-reconnect-spinner" />
+          {t('sessions.reconnecting')}
+        </div>
+      )}
       {page === 'pairing' && <PairingPage onPaired={handlePaired} />}
       {shouldShow('workspace') && sessionMgrRef.current && (
         <div className={`nav-page ${getNavClass('workspace', currentPage, navDir, isAnimating)}`}>
