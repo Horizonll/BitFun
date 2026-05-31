@@ -75,6 +75,9 @@ const SessionScene: React.FC<SessionSceneProps> = ({
   const calculateValidRightWidth = useCallback((newWidth: number): number => {
     if (!containerRef.current) return newWidth;
     const containerWidth = containerRef.current.offsetWidth;
+    // When the container hasn't been laid out yet (e.g. window just restored from
+    // minimize), offsetWidth may be 0. Bail early to avoid clamping to a tiny value.
+    if (containerWidth <= 0) return newWidth;
     // NavPanel (240px) is outside SessionScene — only account for resizer + min chat width
     const reserved = PANEL_COMMON_CONFIG.RESIZER_WIDTH + PANEL_COMMON_CONFIG.MIN_CENTER_WIDTH;
     const dynamicMax = containerWidth - reserved;
@@ -170,6 +173,25 @@ const SessionScene: React.FC<SessionSceneProps> = ({
       window.removeEventListener('resize', validate);
     };
   }, [currentRightWidth, calculateValidRightWidth, updateRightPanelWidth]);
+
+  // Restore right panel width when window regains visibility (e.g. after minimize → restore).
+  // This acts as a safety net in case any layout recalculation during the restore
+  // cycle lost the user's manual width adjustment.
+  const prevVisibleRef = useRef(true);
+  useEffect(() => {
+    const handleVisibility = () => {
+      const nowVisible = document.visibilityState === 'visible';
+      if (nowVisible && !prevVisibleRef.current) {
+        const saved = loadPanelWidth(STORAGE_KEYS.RIGHT_PANEL_LAST_WIDTH, currentRightWidth);
+        if (saved !== currentRightWidth && !state.layout.rightPanelCollapsed) {
+          updateRightPanelWidth(saved);
+        }
+      }
+      prevVisibleRef.current = nowVisible;
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [currentRightWidth, updateRightPanelWidth, state.layout.rightPanelCollapsed]);
 
   // Cleanup animation frames
   useEffect(() => () => {
