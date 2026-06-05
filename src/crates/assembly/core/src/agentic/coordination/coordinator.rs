@@ -4264,6 +4264,11 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             )
             .await?;
         let session_id = session.session_id.clone();
+        // Sync context window from AI config so subagents with large-context
+        // models are not prematurely capped at SessionConfig::default()'s 128128.
+        self.session_manager
+            .refresh_session_context_window(&session_id)
+            .await?;
         if let Some(source_session_id) = prompt_cache_source_session_id.as_deref() {
             let copied = self
                 .session_manager

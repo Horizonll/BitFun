@@ -2166,6 +2166,33 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Sync session context window from AI config without requiring an explicit model_id.
+    ///
+    /// Subagent sessions created via `build_session_config_for_workspace` use
+    /// `SessionConfig::default()` which hardcodes `max_context_tokens: 128128`.
+    /// This method reloads the AI config and updates `max_context_tokens` to the
+    /// model's actual configured `context_window`, so subagents with large-context
+    /// models are not prematurely capped.
+    pub async fn refresh_session_context_window(
+        &self,
+        session_id: &str,
+    ) -> BitFunResult<()> {
+        if let Some(ai_config) = Self::load_ai_config_for_model_resolution().await {
+            if let Some(mut session) = self.sessions.get_mut(session_id) {
+                let previous = session.config.max_context_tokens;
+                Self::sync_session_context_window_from_ai_config(&mut session, &ai_config);
+                let updated = session.config.max_context_tokens;
+                if updated != previous {
+                    debug!(
+                        "Refreshed session context window: session_id={}, previous={}, updated={}",
+                        session_id, previous, updated
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Update session activity time
     pub fn touch_session(&self, session_id: &str) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
