@@ -4,6 +4,7 @@ import { AGENT_TEAM_TAG_COLORS } from '../agentTheme';
 import './AgentTeamCard.scss';
 
 interface AgentTeamCardProps {
+  teamId?: string;
   index?: number;
   title: string;
   subtitle: string;
@@ -13,6 +14,7 @@ interface AgentTeamCardProps {
 }
 
 const AgentTeamCard: React.FC<AgentTeamCardProps> = ({
+  teamId,
   index = 0,
   title,
   subtitle,
@@ -33,6 +35,8 @@ const AgentTeamCard: React.FC<AgentTeamCardProps> = ({
         }
       }}
       aria-label={title}
+      data-testid="agents-team-card"
+      data-team-id={teamId ?? ''}
     >
       <div className="agent-team-card__header">
         <div className="agent-team-card__icon">

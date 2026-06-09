@@ -70,7 +70,7 @@ const WelcomeScene: React.FC = () => {
     } finally {
       setIsSelecting(false);
     }
-  }, [openWorkspace, openScene, t]);
+  }, [openWorkspace, openScene]);
 
   const handleNewProject = useCallback(() => {
     window.dispatchEvent(new Event('nav:new-project'));
@@ -109,7 +109,7 @@ const WelcomeScene: React.FC = () => {
   }, [formatLocaleDate, t]);
 
   return (
-    <div className="welcome-scene">
+    <div className="welcome-scene" data-testid="welcome-scene">
       <div className="welcome-scene__content">
         <div className="welcome-scene__greeting">
           <h1 className="welcome-scene__title">{t('welcomeScene.firstTime.title')}</h1>
@@ -129,11 +129,16 @@ const WelcomeScene: React.FC = () => {
                 className="welcome-scene__link-btn"
                 onClick={() => void handleOpenFolder()}
                 disabled={isSelecting}
+                data-testid="welcome-open-project-btn"
               >
                 <FolderOpen size={12} />
                 {t('welcomeScene.openOtherProject')}
               </button>
-              <button className="welcome-scene__link-btn" onClick={handleNewProject}>
+              <button
+                className="welcome-scene__link-btn"
+                onClick={handleNewProject}
+                data-testid="welcome-new-project-btn"
+              >
                 <FolderPlus size={12} />
                 {t('welcomeScene.newProject')}
               </button>
@@ -141,16 +146,23 @@ const WelcomeScene: React.FC = () => {
           </div>
 
           {displayRecentWorkspaces.length > 0 ? (
-            <div className="welcome-scene__recent-list">
+            <div className="welcome-scene__recent-list" data-testid="welcome-recent-workspace-list">
               {displayRecentWorkspaces.map(ws => {
                 const { hostPrefix, folderLabel, tooltip } = getRecentWorkspaceLineParts(ws);
                 return (
-                <div key={ws.id} className="welcome-scene__recent-row">
+                <div
+                  key={ws.id}
+                  className="welcome-scene__recent-row"
+                  data-testid="welcome-recent-workspace-row"
+                  data-workspace-id={ws.id}
+                >
                   <Tooltip content={tooltip} placement="right" followCursor>
                     <button
                       type="button"
                       className="welcome-scene__recent-item"
                       onClick={() => { void handleSwitchWorkspace(ws); }}
+                      data-testid="welcome-recent-workspace-open"
+                      data-workspace-id={ws.id}
                     >
                       <FolderOpen size={13} />
                       <span className="welcome-scene__recent-name">
@@ -172,6 +184,8 @@ const WelcomeScene: React.FC = () => {
                     title={t('welcomeScene.removeFromRecent')}
                     aria-label={t('welcomeScene.removeFromRecent')}
                     onClick={() => { void handleRemoveFromRecent(ws.id); }}
+                    data-testid="welcome-recent-workspace-remove"
+                    data-workspace-id={ws.id}
                   >
                     <span className="welcome-scene__recent-time-btn__label">
                       {formatDate(ws.lastAccessed)}
@@ -185,7 +199,9 @@ const WelcomeScene: React.FC = () => {
               })}
             </div>
           ) : (
-            <p className="welcome-scene__no-recent">{t('welcomeScene.noRecentWorkspaces')}</p>
+            <p className="welcome-scene__no-recent" data-testid="welcome-recent-workspace-empty">
+              {t('welcomeScene.noRecentWorkspaces')}
+            </p>
           )}
         </section>
 

@@ -668,6 +668,7 @@ const SkillsScene: React.FC = () => {
                   className="bitfun-skills-scene__detail-path-btn"
                   title={t('list.item.openPathInExplorer')}
                   onClick={() => void handleRevealSkillPath(selectedInstalledSkill.path)}
+                  data-testid="skills-detail-path-btn"
                 >
                   {selectedInstalledSkill.path}
                 </button>
@@ -700,6 +701,7 @@ const SkillsScene: React.FC = () => {
               target="_blank"
               rel="noreferrer"
               className="bitfun-skills-scene__detail-link"
+              data-testid="skills-detail-external-link"
             >
               {selectedMarketSkill.url}
             </a>

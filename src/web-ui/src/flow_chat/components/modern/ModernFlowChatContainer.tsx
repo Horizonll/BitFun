@@ -1378,6 +1378,8 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
         ref={chatScopeRef}
         className={`modern-flowchat-container flow-chat-typography ${className}`}
         data-shortcut-scope="chat"
+        data-testid="flowchat-container"
+        data-session-id={activeSession?.sessionId ?? ''}
       >
         <FlowChatHeader
           currentTurn={effectiveVisibleTurnInfo?.turnIndex ?? 0}
@@ -1423,6 +1425,7 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
 
         <div
           className="modern-flowchat-container__messages"
+          data-testid="flowchat-messages"
           data-active-session-id={activeSession?.sessionId ?? ''}
           data-history-state={historyState ?? 'none'}
           data-context-restore-state={activeSession?.contextRestoreState ?? 'none'}

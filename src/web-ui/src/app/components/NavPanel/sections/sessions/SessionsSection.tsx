@@ -1031,9 +1031,11 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
               ]
                 .filter(Boolean)
                 .join(' ')}
-              data-testid="session-nav-item"
+              data-testid="nav-session-item"
               data-session-id={session.sessionId}
-              data-session-title={sessionTitle}
+              data-session-kind={relationship.kind}
+              data-session-level={String(level)}
+              data-session-active={isRowActive ? 'true' : 'false'}
               onPointerDown={event => handleSessionOpenPointerDown(event, session)}
               onClick={() => handleSwitch(session.sessionId)}
             >
@@ -1233,7 +1235,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
         <button
           type="button"
           className={`bitfun-nav-panel__inline-toggle${metadataPageState.isLoading ? ' is-loading' : ''}`}
-          data-testid="session-nav-show-more"
+          data-testid="nav-session-list-toggle"
           data-session-nav-toggle-action={expandToggleState.action}
           disabled={metadataPageState.isLoading}
           onClick={() => { void handleExpandToggle(); }}
