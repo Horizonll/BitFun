@@ -65,11 +65,14 @@ fn remote_workspace_kind(
 }
 
 fn git_branch_for_workspace_path(path: &std::path::Path) -> Option<String> {
-    git2::Repository::open(path).ok().and_then(|repo| {
-        repo.head()
-            .ok()
-            .and_then(|head| head.shorthand().ok().map(String::from))
-    })
+    let path_str = path.to_string_lossy();
+    bitfun_services_integrations::git::execute_git_command_sync(
+        &path_str,
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty() && s != "HEAD")
 }
 
 async fn current_remote_workspace_facts() -> Option<RemoteWorkspaceFacts> {
