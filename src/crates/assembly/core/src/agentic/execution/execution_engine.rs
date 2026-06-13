@@ -3191,7 +3191,7 @@ impl ExecutionEngine {
 #[cfg(test)]
 mod tests {
     use super::{ContextHealthSnapshot, ExecutionEngine};
-    use crate::agentic::core::{Message, MessageRole, ToolResult};
+    use crate::agentic::core::{Message, MessageRole, ToolCall, ToolResult};
     use crate::service::config::types::AIConfig;
     use crate::service::config::types::AIModelConfig;
     use crate::util::types::ToolDefinition;
