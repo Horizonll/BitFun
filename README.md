@@ -56,15 +56,21 @@ Beyond cost, Agent experience also depends on how quickly it can retrieve contex
 
 ---
 
-## One Desktop, Five Agent Workflows
+## Two Core Scenarios, One Extensible Agent Desktop
 
-| Workflow | What it solves |
-| --- | --- |
-| **Code** | A Code Agent for real repositories: Agentic, Plan, Debug, testing, review, Deep Review, and continuous iteration. |
-| **Research** | Collect context, compare sources, summarize findings, and produce structured conclusions, reports, or follow-up actions. |
-| **Cowork** | Handle PDF / DOCX / XLSX / PPTX, writing, rewriting, summarization, layout, and office collaboration. |
-| **Operate** | Use Computer Use to operate browsers and desktop apps, completing flows such as clicking, typing, navigating, waiting, and confirming. |
-| **Extend** | Connect MCP, install Skills, define Markdown Agents, generate Mini Apps, and continue reshaping BitFun itself. |
+You can hand two kinds of complex work to BitFun: shipping code in real repositories and turning source material into office deliverables. When a task needs the browser, desktop apps, the terminal, or a remote environment, it can enter the real workspace; when your workflow needs more, you can extend it with custom Agents, MCP, Skills, and Mini Apps.
+
+### Core Scenarios
+
+| Scenario | Delivery goal | Typical capabilities |
+| --- | --- | --- |
+| **Coding** | Move from a real repository to a mergeable result. | Agentic, Plan, Debug, testing, Git, Deep Review, long-horizon tasks, and benchmarks. |
+| **Office Work** | Move from source material to deliverable documents. | Research, PPT, DOCX, XLSX, PDF, summarization, writing, meeting notes, and reports. |
+
+### Shared Capabilities
+
+- **Desktop execution layer**: Computer Use, browser operation, desktop apps, the filesystem, terminals, remote workspaces, and Mini Apps let the Agent enter real work environments.
+- **Customization layer**: MCP, Skills, custom Agents, Mini Apps, and source-level extension let BitFun keep growing around your tools, roles, and interfaces.
 
 ![first_screen_screenshot](./png/first_screen_screenshot.png)
 
@@ -100,7 +106,7 @@ BitFun's extension paths progress continuously from light to deep customization:
 
 | Tier | Path | Best for |
 | --- | --- | --- |
-| **L1** | Markdown Agent | Defining roles, flows, constraints, and tool bundles. |
+| **L1** | Custom Agent | Defining roles, flows, constraints, and tool bundles. |
 | **L2** | MCP / Skills | Connecting external tools, professional capabilities, and workflows. |
 | **L3** | Mini App | Generating dedicated interfaces, forms, panels, or visualizations for tasks. |
 | **L4** | Source-level customization | Changing tools, adapters, UI, Runtime, or product shape. |
