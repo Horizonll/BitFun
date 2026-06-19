@@ -22,7 +22,7 @@ BitFun is a local AI workbench built around a Code Agent designed for long-horiz
 
 It can understand complex context, call tools, wait for results, correct deviations, and keep long-horizon tasks moving until they reach a deliverable state. Coding, research, office work, documents, desktop operations, and extensible workflows all happen in the same local desktop environment.
 
-The core goal is direct: move AI from one-off task execution into a productivity system that can work over long periods.
+Core goal: move AI from iterative Agent Loop execution into a productivity system that can autonomously complete long-horizon work.
 
 ![readme_hero](./png/readme_hero_CN.png)
 
@@ -30,19 +30,27 @@ The core goal is direct: move AI from one-off task execution into a productivity
 
 ## Agent Core Metrics
 
-The data below evaluates BitFun's core Agent capabilities. All measurements use **Deepseek-V4-Pro** and focus on task completion, KV Cache reuse, and large-repository search efficiency.
+The data below evaluates BitFun's core Agent capabilities. All measurements use **Deepseek-V4-Pro** and are grouped into completion results, token economy, and other experience metrics.
+
+> The current numbers are BitFun's initial evaluation results, with each case run once. Benchmarks can fluctuate with task sampling, model versions, runtime environment, and single-run variance, so these scores are meant as an initial sanity signal that the current Agent is already reasonably capable, not as a fixed ranking claim or final ceiling. We will keep optimizing and release full benchmark details later.
+
+### 1. Completion Results
 
 BitFun leads Open Code and Claude Code on both **SWE-Bench-Pro** and **SWE-Bench-Verified**. SWE-Bench-Pro focuses on complex software engineering, while SWE-Bench-Verified focuses on human-verified GitHub issue fixes.
 
 ![Agent benchmark scores](./png/agent_benchmark_scores.svg)
 
-The current numbers are BitFun's initial evaluation results, with each case run once. We will keep optimizing and release full benchmark details later. Benchmark references: [SWE-Bench-Pro](https://labs.scale.com/leaderboard/swe_bench_pro_public) / [SWE-Bench-Verified](https://www.swebench.com/verified.html)
+Benchmark references: [SWE-Bench-Pro](https://labs.scale.com/leaderboard/swe_bench_pro_public) / [SWE-Bench-Verified](https://www.swebench.com/verified.html)
 
-Whether Agent execution is economical depends on whether repeated context can be reused reliably. In the same SWE-Bench-Pro evaluation round, BitFun's average KV Cache hit rate was **98.67%**. Across 728 valid cache records, **83.1%** of trials reached a hit rate of at least 98%, and **51.8%** reached at least 99%. On the token side, Cached Input accounted for **98.71%**, while Uncached Input (scaled) accounted for **1.29%**.
+### 2. Token Economy
+
+Agent economy needs to be evaluated across end-to-end token consumption, execution time, and KV Cache reuse. The current snapshot first covers KV Cache behavior from the same SWE-Bench-Pro round: BitFun's average KV Cache hit rate was **98.67%**. The follow-up full benchmark report will add the broader cost and latency metrics.
 
 ![KV Cache hit rate distribution](./png/kv_cache_hit_rate.svg)
 
-Agents also need to retrieve context repeatedly. For large-repository retrieval, BitFun uses **flashgrep** to reduce search time by up to about **94.6%** in huge repositories such as Chromium, with an average speedup of about **36.1x**.
+### 3. Other Experience Metrics
+
+Beyond cost, Agent experience also depends on how quickly it can retrieve context in very large engineering projects. For tens-of-millions-line repositories such as Chromium, BitFun uses **flashgrep** to reduce search time by up to about **94.6%**, with an average speedup of about **36.1x**.
 
 ![flashgrep search speed](./png/flashgrep_search_speed.svg)
 

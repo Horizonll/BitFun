@@ -22,7 +22,7 @@ BitFun 基于一个面向长程任务、强调工程执行与 Token 经济性的
 
 它能理解复杂上下文、调用工具、等待结果、修正偏差，把长程任务持续推进到可交付状态；编码、调研、办公、文档、桌面操作和可扩展工作流，都在同一个本地桌面环境里展开。
 
-核心目标很直接：让 AI 从一次任务执行，进化成可以长期工作的生产力系统。
+核心目标：让 AI 从“Agent Loop 的迭代执行”进化成“可自主完成长期工作”的生产力系统。
 
 ![readme_hero_CN](./png/readme_hero_CN.png)
 
@@ -30,19 +30,27 @@ BitFun 基于一个面向长程任务、强调工程执行与 Token 经济性的
 
 ## Agent 核心指标
 
-下面的数据用于观察 BitFun Agent 的核心能力。统一使用 **Deepseek-V4-Pro**，从任务完成率、KV Cache 复用和大仓库检索效率三个指标评估。
+下面的数据用于观察 BitFun Agent 的核心能力。统一使用 **Deepseek-V4-Pro**，分为完成效果、Token 经济和其他体验指标三个部分。
+
+> 当前数据为每个 case 跑 1 次得到的 BitFun 初始评测结果。评测会受到任务抽样、模型版本、运行环境和单次执行偶然性的影响，存在一定波动；这组数据仅用于说明当前 Agent 已具备可用的基础竞争力，并不代表固定排名或最终上限。后续会持续优化并放出完整评测详情。
+
+### 1. 完成效果
 
 BitFun 在 **SWE-Bench-Pro** 和 **SWE-Bench-Verified** 上均领先 Open Code 与 Claude Code。SWE-Bench-Pro 关注复杂软件工程，SWE-Bench-Verified 关注人工验证的 GitHub issue 修复。
 
 ![Agent benchmark scores](./png/agent_benchmark_scores.svg)
 
-当前数据为每个 case 跑 1 次得到的 BitFun 初始评测结果，后续会持续优化并放出完整评测详情。评测集说明：[SWE-Bench-Pro](https://labs.scale.com/leaderboard/swe_bench_pro_public) / [SWE-Bench-Verified](https://www.swebench.com/verified.html)
+评测集说明：[SWE-Bench-Pro](https://labs.scale.com/leaderboard/swe_bench_pro_public) / [SWE-Bench-Verified](https://www.swebench.com/verified.html)
 
-Agent 执行是否经济，关键在于重复上下文能否被稳定复用。同一轮 SWE-Bench-Pro 评测中，BitFun 的 KV Cache 平均命中率为 **98.67%**；728 条有效 cache 记录里，**83.1%** 的 trials 命中率不低于 98%，**51.8%** 不低于 99%。Token 侧，Cached Input 占 **98.71%**，Uncached Input (scaled) 占 **1.29%**。
+### 2. Token 经济
+
+Agent 执行是否经济，需要综合评估端到端 Token 消耗、执行耗时和 KV Cache 复用。当前先展示同一轮 SWE-Bench-Pro 中的 KV Cache 观察：BitFun 的平均 KV Cache 命中率为 **98.67%**。后续完整评测会继续补充更完整的成本与耗时指标。
 
 ![KV Cache hit rate distribution](./png/kv_cache_hit_rate.svg)
 
-Agent 还需要反复寻找上下文。大仓库检索方面，BitFun 通过 **flashgrep** 在 Chromium 等超大仓库中最高降低约 **94.6%** 搜索耗时，平均加速约 **36.1x**。
+### 3. 其他体验指标
+
+成本之外，Agent 体验还取决于它能否在超大工程里快速找回上下文。面对 Chromium 这类千万行级代码仓库，BitFun 通过 **flashgrep** 最高降低约 **94.6%** 搜索耗时，平均加速约 **36.1x**。
 
 ![flashgrep search speed](./png/flashgrep_search_speed.svg)
 
