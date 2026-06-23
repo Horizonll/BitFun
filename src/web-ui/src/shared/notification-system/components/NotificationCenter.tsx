@@ -380,6 +380,7 @@ export const NotificationCenter: React.FC = () => {
               className="notification-center__header-button"
               onClick={handleClose}
               title={t('common:actions.close')}
+              data-testid="notification-center-close-btn"
             >
               <X size={16} />
             </button>
