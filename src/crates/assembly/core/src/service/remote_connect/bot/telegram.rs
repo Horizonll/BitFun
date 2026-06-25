@@ -307,6 +307,7 @@ impl TelegramBot {
                 { "command": "new", "description": "Create a new session" },
                 { "command": "resume", "description": "Resume an existing session" },
                 { "command": "switch", "description": "Switch assistant or workspace" },
+                { "command": "model", "description": "Switch the session model" },
                 { "command": "cancel", "description": "Cancel the current task" },
                 { "command": "expert", "description": "Switch to Expert mode" },
                 { "command": "assistant", "description": "Switch to Assistant mode" },

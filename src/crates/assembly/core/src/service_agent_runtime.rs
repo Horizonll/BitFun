@@ -643,7 +643,46 @@ impl CoreServiceAgentRuntime {
             .update_session_model_id(session_id, &normalized_model_id)
             .await
             .map_err(|e| e.to_string())?;
+
+        // Propagate the model choice to every agent type already present in
+        // `ai.agent_models` so that newly created sessions of any type
+        // (including different agent types like Cowork/Claw) inherit it.
+        // Also ensure the current session's agent type is present.  This
+        // covers mobile-web and IM-bot paths; the desktop client handles
+        // its own `ai.agent_models` writing in the frontend.
+        Self::persist_model_for_all_agents(&normalized_model_id, || {
+            coordinator
+                .get_session_manager()
+                .get_session(session_id)
+                .map(|s| s.agent_type.clone())
+        })
+        .await;
+
         Ok(normalized_model_id)
+    }
+
+    /// Write `model_id` to `ai.agent_models` for **every** agent type already
+    /// present in the config, plus the current session's agent type if it is
+    /// not yet listed.  This ensures newly created sessions of any type pick
+    /// up the same model without hardcoding a fixed list of agent types.
+    async fn persist_model_for_all_agents<F>(model_id: &str, current_agent_type: F)
+    where
+        F: FnOnce() -> Option<String>,
+    {
+        let Ok(config_service) = crate::service::config::get_global_config_service().await else {
+            return;
+        };
+        let mut current: std::collections::HashMap<String, String> = config_service
+            .get_config(Some("ai.agent_models"))
+            .await
+            .unwrap_or_default();
+        for value in current.values_mut() {
+            *value = model_id.to_string();
+        }
+        if let Some(agent_type) = current_agent_type() {
+            current.insert(agent_type, model_id.to_string());
+        }
+        let _ = config_service.set_config("ai.agent_models", &current).await;
     }
 
     pub(crate) fn remote_control_state_port(

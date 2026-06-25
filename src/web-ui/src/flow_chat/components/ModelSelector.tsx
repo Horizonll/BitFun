@@ -3,7 +3,9 @@
  * Shows the active model and allows quick switching.
  *
  * Config linkage:
- * - Unified logic: all modes use ai.agent_models[mode_id]
+ * - Model selection is shared across all agent types via ai.agent_models
+ *   — switching in one session refreshes every existing agent mapping plus
+ *   the current session's agent type, so new sessions of any type inherit it.
  * - Supports 'auto' | 'primary' | 'fast' | specific model IDs
  */
 
@@ -498,10 +500,16 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
       const currentAgentModels = await configManager.getConfig<Record<string, string>>('ai.agent_models') || {};
 
-      const updatedAgentModels = {
-        ...currentAgentModels,
-        [currentMode]: modelId,
-      };
+      // Refresh **every** agent mapping already present in the config so
+      // all configured agents pick up the new model.  Also ensure the
+      // current session's agent type is included.  No hardcoded list —
+      // any agent type added to the config in the future is covered
+      // automatically.
+      const updatedAgentModels = { ...currentAgentModels };
+      for (const agentType of Object.keys(updatedAgentModels)) {
+        updatedAgentModels[agentType] = modelId;
+      }
+      updatedAgentModels[currentMode] = modelId;
 
       await configManager.setConfig('ai.agent_models', updatedAgentModels);
       setAgentModels(updatedAgentModels);
