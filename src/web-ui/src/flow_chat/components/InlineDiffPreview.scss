@@ -194,9 +194,12 @@
   
   &__content {
     flex: 1;
+    min-width: 0;
     padding: 0 8px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+    word-break: break-word;
+    overflow: hidden;
     
     // Strip global and SyntaxHighlighter borders/backgrounds.
     pre, code, span {
