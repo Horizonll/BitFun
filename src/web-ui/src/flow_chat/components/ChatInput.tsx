@@ -39,6 +39,7 @@ import { useChatInputState } from '../store/chatInputStateStore';
 import { useInputHistoryStore } from '../store/inputHistoryStore';
 import { startBtwThread } from '../services/BtwThreadService';
 import { runUsageReportCommand } from '../services/usageReportService';
+import { buildImagePayload } from '../utils/imagePayload';
 import { isGoalSlashCommand, parseGoalCommand } from '../services/goalService';
 import {
   getHistorySessionOpenTransitionSnapshot,
@@ -1933,6 +1934,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const message = expandComposerSpecialTokens(originalMessage);
     const messageCharCount = getCharacterCount(message);
     const question = stripSlashCommand(message, '/btw').trim();
+    const imagesForBtw = [...imageContexts];
 
     // Clear input without adding to main history.
     dispatchInput({ type: 'CLEAR_VALUE' });
@@ -1960,12 +1962,26 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
 
     try {
+      let imagePayload: Awaited<ReturnType<typeof buildImagePayload>>;
+      try {
+        imagePayload = await buildImagePayload(imagesForBtw);
+      } catch (error) {
+        log.error('Failed to upload images for /btw thread', {
+          imageCount: imagesForBtw.length,
+          error,
+        });
+        notificationService.error('Image upload failed. Please try again.', { duration: 3000 });
+        throw error;
+      }
+
       const { childSessionId } = await startBtwThread({
         parentSessionId: currentSessionId,
         workspacePath,
         question,
         modelId: 'fast',
+        imagePayload,
       });
+      imagesForBtw.forEach(image => removeContext(image.id));
       openBtwSessionInAuxPane({
         childSessionId,
         parentSessionId: currentSessionId,
@@ -1980,7 +1996,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       pendingLargePastesRef.current = originalPendingLargePastes;
       dispatchInput({ type: 'SET_VALUE', payload: originalMessage });
     }
-  }, [clearPendingLargePastes, currentSessionId, derivedState, expandComposerSpecialTokens, inputState.value, isBtwSession, setQueuedInput, t, workspacePath]);
+  }, [clearPendingLargePastes, currentSessionId, derivedState, expandComposerSpecialTokens, imageContexts, inputState.value, isBtwSession, removeContext, setQueuedInput, t, workspacePath]);
 
   const submitCompactFromInput = useCallback(async () => {
     if (!effectiveTargetSessionId || !effectiveTargetSession) {
