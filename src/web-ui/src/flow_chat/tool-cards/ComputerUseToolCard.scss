@@ -40,8 +40,8 @@
   gap: 6px;
   padding: 6px 8px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--color-warning, orange) 12%, transparent);
-  color: var(--color-warning, orange);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  color: var(--color-warning);
   font-size: 12px;
 
   svg {

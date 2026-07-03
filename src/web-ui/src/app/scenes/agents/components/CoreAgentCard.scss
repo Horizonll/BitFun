@@ -126,8 +126,8 @@
     &--disabled {
       padding: 1px 6px;
       border-radius: 999px;
-      background: color-mix(in srgb, var(--color-warning, orange) 15%, transparent);
-      color: var(--color-warning, orange);
+      background: color-mix(in srgb, var(--color-warning) 15%, transparent);
+      color: var(--color-warning);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
