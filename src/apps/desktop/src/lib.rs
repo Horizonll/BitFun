@@ -1261,6 +1261,7 @@ pub async fn run() {
             api::ssh_api::remote_rename,
             api::ssh_api::remote_download_to_local_path,
             api::ssh_api::remote_upload_from_local_path,
+            api::ssh_api::cancel_transfer,
             api::ssh_api::remote_execute,
             api::ssh_api::remote_open_workspace,
             api::ssh_api::remote_close_workspace,

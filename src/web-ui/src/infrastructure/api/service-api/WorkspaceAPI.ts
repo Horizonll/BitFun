@@ -983,7 +983,7 @@ export class WorkspaceAPI {
     sourcePaths: string[],
     targetDirectory: string,
     isCut: boolean = false
-  ): Promise<{ successCount: number; failedFiles: Array<{ path: string; error: string }> }> {
+  ): Promise<{ successCount: number; directoryCount: number; failedFiles: Array<{ path: string; error: string }> }> {
     try {
       return await api.invoke('paste_files', {
         request: {

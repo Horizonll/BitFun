@@ -232,7 +232,8 @@
         "refresh": "刷新",
         "newFile": "新建文件",
         "newFolder": "新建文件夹",
-        "collapseAll": "折叠所有目录"
+        "collapseAll": "折叠所有目录",
+        "paste": "粘贴"
       },
       "git": {
         "commit": "提交",

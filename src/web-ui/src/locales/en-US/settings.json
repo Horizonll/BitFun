@@ -232,7 +232,8 @@
         "refresh": "Refresh",
         "newFile": "New File",
         "newFolder": "New Folder",
-        "collapseAll": "Collapse All"
+        "collapseAll": "Collapse All",
+        "paste": "Paste"
       },
       "git": {
         "commit": "Commit",

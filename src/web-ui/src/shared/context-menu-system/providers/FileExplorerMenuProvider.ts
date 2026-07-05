@@ -116,21 +116,23 @@ export class FileExplorerMenuProvider implements IMenuProvider {
         });
       }
 
-      items.push({
-        id: 'file-download',
-        label: i18nService.t('common:file.download'),
-        icon: 'Download',
-        onClick: () => {
-          globalEventBus.emit('file:download', { path: fileContext.filePath });
-        }
-      });
-
-      items.push({
-        id: 'file-separator-1',
-        label: '',
-        separator: true
-      });
     }
+
+    // Download (available for both files and directories)
+    items.push({
+      id: 'file-download',
+      label: i18nService.t('common:file.download'),
+      icon: 'Download',
+      onClick: () => {
+        globalEventBus.emit('file:download', { path: fileContext.filePath, isDirectory });
+      }
+    });
+
+    items.push({
+      id: 'file-separator-1',
+      label: '',
+      separator: true
+    });
 
     
     if (!isReadOnly) {

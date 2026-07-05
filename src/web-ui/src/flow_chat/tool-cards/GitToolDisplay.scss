@@ -58,6 +58,11 @@
   border-radius: 0 0 6px 6px;
 }
 
+/* Inside a rounded, clipping wrapper, match its radius to avoid corner gaps. */
+.base-tool-card-wrapper.git-tool-display .git-result-footer {
+  border-radius: 0 0 var(--flowchat-card-radius) var(--flowchat-card-radius);
+}
+
 /* Expanded + same shell as Terminal: match `terminal-result-footer` inset from `TerminalToolCard.scss`. */
 .base-tool-card-wrapper.terminal-tool-card.git-tool-display .git-result-footer {
   margin-left: -12px;
