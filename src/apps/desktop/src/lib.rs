@@ -875,6 +875,8 @@ pub async fn run() {
             delete_directory,
             create_file,
             create_directory,
+            compress_path,
+            decompress_path,
             list_directory_files,
             start_file_watch,
             stop_file_watch,

@@ -61,6 +61,11 @@ ignore = { workspace = true }
 urlencoding = { workspace = true }
 reqwest = { workspace = true }
 zip = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+bzip2 = { workspace = true }
+xz2 = { workspace = true }
+zstd = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }

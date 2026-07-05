@@ -503,6 +503,44 @@ const FilesPanel: React.FC<FilesPanelProps> = ({
     [notification, t, createTransferProgress]
   );
 
+  const handleCompress = useCallback(
+    async (data: { path: string; isDirectory?: boolean }) => {
+      const ws = workspaceManager.getState().currentWorkspace;
+      const remoteCid = ws?.connectionId;
+      try {
+        await workspaceAPI.compressPath(data.path, remoteCid);
+        notification.success(
+          t('archive.compressSuccess', { name: data.path.split(/[/\\]/).pop() || '' }),
+        );
+        loadFileTree(undefined, true);
+      } catch (error) {
+        log.error('Failed to compress', error);
+        const reason = error instanceof Error ? error.message : String(error);
+        notification.error(t('archive.compressFailed', { error: reason }));
+      }
+    },
+    [notification, t, loadFileTree],
+  );
+
+  const handleDecompress = useCallback(
+    async (data: { path: string }) => {
+      const ws = workspaceManager.getState().currentWorkspace;
+      const remoteCid = ws?.connectionId;
+      try {
+        await workspaceAPI.decompressPath(data.path, remoteCid);
+        notification.success(
+          t('archive.decompressSuccess', { name: data.path.split(/[/\\]/).pop() || '' }),
+        );
+        loadFileTree(undefined, true);
+      } catch (error) {
+        log.error('Failed to decompress', error);
+        const reason = error instanceof Error ? error.message : String(error);
+        notification.error(t('archive.decompressFailed', { error: reason }));
+      }
+    },
+    [notification, t, loadFileTree],
+  );
+
   const handleFileTreeRefresh = useCallback(() => {
     loadFileTree(undefined, true);
   }, [loadFileTree]);
@@ -781,6 +819,8 @@ const FilesPanel: React.FC<FilesPanelProps> = ({
     globalEventBus.on('file:delete', handleDelete);
     globalEventBus.on('file:reveal', handleReveal);
     globalEventBus.on('file:download', handleFileDownload);
+    globalEventBus.on('file:compress', handleCompress);
+    globalEventBus.on('file:decompress', handleDecompress);
     globalEventBus.on('file:paste', handlePasteFromContextMenu);
     globalEventBus.on('file-tree:refresh', handleFileTreeRefresh);
     globalEventBus.on('file-explorer:navigate', handleNavigateToPath);
@@ -793,11 +833,13 @@ const FilesPanel: React.FC<FilesPanelProps> = ({
       globalEventBus.off('file:delete', handleDelete);
       globalEventBus.off('file:reveal', handleReveal);
       globalEventBus.off('file:download', handleFileDownload);
+      globalEventBus.off('file:compress', handleCompress);
+      globalEventBus.off('file:decompress', handleDecompress);
       globalEventBus.off('file:paste', handlePasteFromContextMenu);
       globalEventBus.off('file-tree:refresh', handleFileTreeRefresh);
       globalEventBus.off('file-explorer:navigate', handleNavigateToPath);
     };
-  }, [handleOpenFile, handleNewFile, handleNewFolder, handleStartRename, handleDelete, handleReveal, handleFileDownload, handlePasteFromContextMenu, handleFileTreeRefresh, handleNavigateToPath]);
+  }, [handleOpenFile, handleNewFile, handleNewFolder, handleStartRename, handleDelete, handleReveal, handleFileDownload, handleCompress, handleDecompress, handlePasteFromContextMenu, handleFileTreeRefresh, handleNavigateToPath]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {

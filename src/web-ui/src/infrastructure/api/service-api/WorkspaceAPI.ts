@@ -305,6 +305,37 @@ export class WorkspaceAPI {
     }
   }
 
+  /**
+   * Compress a file or directory into an archive in the same parent directory.
+   * Local workspaces produce `.zip`; remote workspaces try `zip` then `tar.gz`.
+   * Returns the path of the created archive.
+   */
+  async compressPath(path: string, remoteConnectionId?: string): Promise<string> {
+    try {
+      return await api.invoke<string>('compress_path', {
+        request: { path, remoteConnectionId }
+      });
+    } catch (error) {
+      throw createTauriCommandError('compress_path', error, { path });
+    }
+  }
+
+  /**
+   * Decompress an archive into a new folder named after the archive (without
+   * extension) in the same parent directory.
+   * Supports `.zip`, `.tar.gz`, `.tgz`, `.tar`.
+   * Returns the path of the created folder.
+   */
+  async decompressPath(path: string, remoteConnectionId?: string): Promise<string> {
+    try {
+      return await api.invoke<string>('decompress_path', {
+        request: { path, remoteConnectionId }
+      });
+    } catch (error) {
+      throw createTauriCommandError('decompress_path', error, { path });
+    }
+  }
+
    
   async getFileTree(path: string, maxDepth?: number): Promise<ExplorerNodeDto[]> {
     try {

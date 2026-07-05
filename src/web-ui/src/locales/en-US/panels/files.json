@@ -119,6 +119,14 @@
     "dropHint": "Drop files here to upload",
     "stop": "Stop"
   },
+  "archive": {
+    "compress": "Compress",
+    "decompress": "Extract",
+    "compressSuccess": "Compressed \"{{name}}\" successfully",
+    "compressFailed": "Compression failed.\n{{error}}",
+    "decompressSuccess": "Extracted \"{{name}}\" successfully",
+    "decompressFailed": "Extraction failed.\n{{error}}"
+  },
   "notifications": {
     "createFileSuccess": "File created successfully",
     "createFileFailed": "Failed to create file: {{error}}",

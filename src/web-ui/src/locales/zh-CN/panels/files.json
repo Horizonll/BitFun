@@ -119,6 +119,14 @@
     "dropHint": "将文件拖放到此处以上传",
     "stop": "停止"
   },
+  "archive": {
+    "compress": "压缩",
+    "decompress": "解压",
+    "compressSuccess": "压缩 \"{{name}}\" 成功",
+    "compressFailed": "压缩失败。\n{{error}}",
+    "decompressSuccess": "解压 \"{{name}}\" 成功",
+    "decompressFailed": "解压失败。\n{{error}}"
+  },
   "notifications": {
     "createFileSuccess": "文件创建成功",
     "createFileFailed": "创建文件失败: {{error}}",
