@@ -364,18 +364,13 @@ export function extractSlideDataFromDocument(doc = document) {
       const slideHeightPx = bodyRect.height;
       const maxWPx = Math.max(8, slideWidthPx - x - 4);
       const scrollH = el.scrollHeight || 0;
-      const isHeading = /^H[1-6]$/.test(el.tagName);
-      const widthPad = isHeading ? Math.min(Math.max(8, w * 0.05), 32) : Math.min(Math.max(2, w * 0.02), 12);
-      if (isHeading) {
-        w = Math.max(w + widthPad, slideWidthPx * 0.92 - x);
-      } else {
-        w = Math.min(w + widthPad, maxWPx);
-      }
+      // Width: trust the browser's layout.  Adding extra width shifts the
+      // wrapping point and causes the PPT to break lines in different places
+      // than the HTML preview.  Only expand the height for scroll overflow.
       w = Math.min(w, maxWPx);
-      const heightPad = Math.max(6, h * (isHeading ? 0.18 : 0.12));
       const maxHPx = Math.max(8, slideHeightPx - y - 4);
-      if (scrollH > h + 2) h = Math.min(scrollH + heightPad, maxHPx);
-      else h = Math.min(h + heightPad, maxHPx);
+      if (scrollH > h + 2) h = Math.min(scrollH, maxHPx);
+      else h = Math.min(h, maxHPx);
       return { x, y, w, h };
     };
 
@@ -490,6 +485,20 @@ export function extractSlideDataFromDocument(doc = document) {
       return 'top';
     };
 
+    // Resolve CSS line-height to a concrete pt value that matches browser
+    // rendering.  CSS "normal" is font-dependent (~1.15–1.2× font-size); the
+    // PPT default differs, so we emit an explicit value to preserve the
+    // visual line spacing of the HTML preview.
+    const resolveLineSpacing = (computed) => {
+      const lh = computed.lineHeight;
+      if (!lh || lh === 'normal') {
+        return pxToPoints(computed.fontSize) * 1.2;
+      }
+      const parsed = parseFloat(lh);
+      if (Number.isNaN(parsed)) return pxToPoints(computed.fontSize) * 1.2;
+      return pxToPoints(lh);
+    };
+
     const emitTextElement = (el, type = el.tagName.toLowerCase(), exactFrame = false, rectOverride = null) => {
       const rect = rectOverride || rectFor(el);
       const text = el.textContent.replace(/\s+/g, ' ').trim();
@@ -513,9 +522,6 @@ export function extractSlideDataFromDocument(doc = document) {
         ? getPositionAndSize(el, rect, rotation)
         : expandTextFrame(el, rect, rotation);
       const isBold = computed.fontWeight === 'bold' || parseInt(computed.fontWeight, 10) >= 600;
-      const lineSpacing = computed.lineHeight && computed.lineHeight !== 'normal'
-        ? pxToPoints(computed.lineHeight)
-        : null;
 
       const baseStyle = {
         fontSize: pxToPoints(computed.fontSize),
@@ -523,15 +529,13 @@ export function extractSlideDataFromDocument(doc = document) {
         color: resolveTextColor(computed, el),
         align: resolveTextAlign(computed),
         valign: exactFrame ? resolveVerticalAlign(computed, rect) : 'top',
-        lineSpacing,
-        paraSpaceBefore: pxToPoints(computed.marginTop),
-        paraSpaceAfter: pxToPoints(computed.marginBottom),
-        margin: [
-          pxToPoints(computed.paddingLeft),
-          pxToPoints(computed.paddingRight),
-          pxToPoints(computed.paddingBottom),
-          pxToPoints(computed.paddingTop)
-        ]
+        lineSpacing: resolveLineSpacing(computed),
+        paraSpaceBefore: 0,
+        paraSpaceAfter: 0,
+        // inset: 0 — the element's padding is already reflected in its
+        // getBoundingClientRect(); setting it again as a PPT margin would
+        // double-indent the text inside the frame.
+        margin: 0,
       };
 
       const transparency = extractAlpha(computed.color);
@@ -698,18 +702,10 @@ export function extractSlideDataFromDocument(doc = document) {
           fontFace: firstComputed.fontFamily.split(',')[0].replace(/['"]/g, '').trim(),
           color: rgbToHex(firstComputed.color),
           align: firstComputed.textAlign === 'start' ? 'left' : firstComputed.textAlign,
-          lineSpacing: firstComputed.lineHeight && firstComputed.lineHeight !== 'normal'
-            ? pxToPoints(firstComputed.lineHeight)
-            : null,
+          lineSpacing: resolveLineSpacing(firstComputed),
           paraSpaceBefore: 0,
           paraSpaceAfter: 0,
-          // Container padding becomes the textbox internal margin (PptxGenJS: [left, right, bottom, top]).
-          margin: [
-            pxToPoints(mergeComputed.paddingLeft),
-            pxToPoints(mergeComputed.paddingRight),
-            pxToPoints(mergeComputed.paddingBottom),
-            pxToPoints(mergeComputed.paddingTop)
-          ]
+          margin: 0,
         };
         const baseTransparency = extractAlpha(firstComputed.color);
         if (baseTransparency !== null) baseStyle.transparency = baseTransparency;
@@ -1098,7 +1094,7 @@ export function extractSlideDataFromDocument(doc = document) {
             bulletColor,
             transparency: extractAlpha(computed.color),
             align: computed.textAlign === 'start' ? 'left' : computed.textAlign,
-            lineSpacing: computed.lineHeight && computed.lineHeight !== 'normal' ? pxToPoints(computed.lineHeight) : null,
+            lineSpacing: resolveLineSpacing(computed),
             paraSpaceBefore: 0,
             paraSpaceAfter: pxToPoints(computed.marginBottom),
             // PptxGenJS margin array is [left, right, bottom, top]

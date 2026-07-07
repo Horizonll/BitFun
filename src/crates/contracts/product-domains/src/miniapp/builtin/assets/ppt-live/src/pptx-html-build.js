@@ -112,7 +112,7 @@ function addElements(slideData, targetSlide, pres) {
       const listOptions = {
         x: el.position.x,
         y: el.position.y,
-        w: capTextBoxWidth(el.position.x, el.position.w + (el.position.w * 0.04)),
+        w: capTextBoxWidth(el.position.x, el.position.w),
         h: Math.min(el.position.h, Math.max(0.15, SLIDE_H_IN - el.position.y - 0.04)),
         fontSize: el.style.fontSize,
         fontFace: el.style.fontFace,
@@ -131,19 +131,12 @@ function addElements(slideData, targetSlide, pres) {
       targetSlide.addText(el.items || el.text, listOptions);
     } else {
       const lineHeight = el.style.lineSpacing || el.style.fontSize * 1.2;
-      const isSingleLine = el.position.h <= lineHeight * 1.5;
       const isVerticalText = el.style.vert && el.style.vert !== 'horz';
-      const widthIncrease = isVerticalText ? 0 : el.position.w * (isSingleLine ? 0.02 : 0.06);
-      let adjustedX = el.position.x;
-      let adjustedW = capTextBoxWidth(el.position.x, el.position.w + widthIncrease);
-      const align = el.style.align;
-      if (!isVerticalText && align === 'center') {
-        adjustedX = el.position.x - ((adjustedW - el.position.w) / 2);
-      } else if (!isVerticalText && align === 'right') {
-        adjustedX = el.position.x - (adjustedW - el.position.w);
-      }
-      adjustedX = Math.max(0, adjustedX);
-      adjustedW = capTextBoxWidth(adjustedX, adjustedW);
+      // Trust the browser-computed width. Extra width inflation changes
+      // wrapping points and causes text to break at different positions than
+      // the HTML preview.
+      const adjustedX = el.position.x;
+      const adjustedW = capTextBoxWidth(el.position.x, el.position.w);
       const textOptions = {
         x: adjustedX,
         y: el.position.y,
