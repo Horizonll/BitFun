@@ -1,6 +1,7 @@
 //! Shared desktop resolution and access helpers for local, runtime, and remote paths.
 
 use crate::api::app_state::AppState;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bitfun_core::agentic::tools::workspace_paths::{
     is_bitfun_runtime_uri, parse_bitfun_runtime_uri,
 };
@@ -241,17 +242,26 @@ pub fn stat_local_path_metadata(
 pub async fn read_text_file(
     app_state: &AppState,
     raw_path: &str,
+    encoding: Option<&str>,
     preferred_remote_connection_id: Option<&str>,
 ) -> Result<String, String> {
     let target =
         resolve_desktop_path_target(app_state, raw_path, preferred_remote_connection_id).await?;
     match &target {
-        DesktopPathTarget::Local { resolved_path, .. } => app_state
-            .filesystem_service
-            .read_file(&resolved_path.to_string_lossy())
-            .await
-            .map(|result| result.content)
-            .map_err(|e| format!("Failed to read file content: {}", e)),
+        DesktopPathTarget::Local { resolved_path, .. } => {
+            let result = app_state
+                .filesystem_service
+                .read_file(&resolved_path.to_string_lossy())
+                .await
+                .map_err(|e| format!("Failed to read file content: {}", e))?;
+            if encoding.is_some_and(|value| value.eq_ignore_ascii_case("base64"))
+                && !result.encoding.eq_ignore_ascii_case("base64")
+            {
+                Ok(BASE64.encode(result.content.as_bytes()))
+            } else {
+                Ok(result.content)
+            }
+        }
         DesktopPathTarget::Remote {
             requested_path,
             entry,
@@ -264,8 +274,39 @@ pub async fn read_text_file(
                 .read_file(&entry.connection_id, requested_path)
                 .await
                 .map_err(|e| format!("Failed to read remote file: {}", e))?;
-            String::from_utf8(bytes).map_err(|e| format!("File is not valid UTF-8: {}", e))
+            encode_remote_file_bytes(bytes, encoding)
         }
+    }
+}
+
+fn encode_remote_file_bytes(bytes: Vec<u8>, encoding: Option<&str>) -> Result<String, String> {
+    if encoding.is_some_and(|value| value.eq_ignore_ascii_case("base64")) {
+        return Ok(BASE64.encode(bytes));
+    }
+
+    String::from_utf8(bytes).map_err(|e| format!("File is not valid UTF-8: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_remote_file_bytes;
+
+    #[test]
+    fn remote_file_bytes_support_explicit_base64_encoding() {
+        let png_header = vec![0x89, b'P', b'N', b'G'];
+        assert_eq!(
+            encode_remote_file_bytes(png_header, Some("base64")).expect("base64 should encode"),
+            "iVBORw=="
+        );
+    }
+
+    #[test]
+    fn remote_file_bytes_preserve_text_default() {
+        assert_eq!(
+            encode_remote_file_bytes(b"hello".to_vec(), None).expect("text should decode"),
+            "hello"
+        );
+        assert!(encode_remote_file_bytes(vec![0xff], None).is_err());
     }
 }
 

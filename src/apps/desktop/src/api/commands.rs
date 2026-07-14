@@ -2538,6 +2538,7 @@ pub async fn read_file_content(
     read_text_file(
         &state,
         &request.file_path,
+        request.encoding.as_deref(),
         request.remote_connection_id.as_deref(),
     )
     .await

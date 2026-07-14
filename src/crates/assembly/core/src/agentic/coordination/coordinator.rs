@@ -56,6 +56,9 @@ use crate::service::workspace::{
 };
 use crate::service_agent_runtime::CoreServiceAgentRuntime;
 use crate::util::errors::{BitFunError, BitFunResult};
+use bitfun_agent_runtime::output_surface::{
+    supports_inline_markdown_images_for_source, TOOL_CONTEXT_INLINE_MARKDOWN_IMAGE_DISPLAY_KEY,
+};
 use bitfun_agent_runtime::remote_file_delivery::{
     needs_computer_links_for_source, remote_file_delivery_reminder,
     TOOL_CONTEXT_REMOTE_FILE_DELIVERY_KEY,
@@ -3543,6 +3546,12 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         if needs_computer_links_for_source(submission_policy.trigger_source) {
             context_vars.insert(
                 TOOL_CONTEXT_REMOTE_FILE_DELIVERY_KEY.to_string(),
+                "true".to_string(),
+            );
+        }
+        if supports_inline_markdown_images_for_source(submission_policy.trigger_source) {
+            context_vars.insert(
+                TOOL_CONTEXT_INLINE_MARKDOWN_IMAGE_DISPLAY_KEY.to_string(),
                 "true".to_string(),
             );
         }

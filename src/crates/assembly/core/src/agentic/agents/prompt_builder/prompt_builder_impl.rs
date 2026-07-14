@@ -54,6 +54,8 @@ pub struct PromptBuilderContext {
     pub runtime_context_needs: RuntimeContextNeeds,
     /// Remote mobile/bot turns need `computer://` links for file delivery.
     pub remote_file_delivery_channel: bool,
+    /// The active response surface can render Markdown image syntax inline.
+    pub inline_markdown_image_display: bool,
 }
 
 impl PromptBuilderContext {
@@ -73,6 +75,7 @@ impl PromptBuilderContext {
             tool_listing_sections: ToolListingSections::default(),
             runtime_context_needs: RuntimeContextNeeds::default(),
             remote_file_delivery_channel: false,
+            inline_markdown_image_display: false,
         }
     }
 
@@ -108,6 +111,11 @@ impl PromptBuilderContext {
 
     pub fn with_remote_file_delivery_channel(mut self, enabled: bool) -> Self {
         self.remote_file_delivery_channel = enabled;
+        self
+    }
+
+    pub fn with_inline_markdown_image_display(mut self, enabled: bool) -> Self {
+        self.inline_markdown_image_display = enabled;
         self
     }
 }
@@ -244,6 +252,7 @@ impl PromptBuilder {
             remote_execution: self.context.remote_execution.clone(),
             local_shell,
             supports_image_understanding: self.context.supports_image_understanding,
+            inline_markdown_image_display: self.context.inline_markdown_image_display,
         })
     }
 
