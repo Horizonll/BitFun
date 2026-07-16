@@ -23,6 +23,15 @@ use tokio::sync::RwLock;
 static REMOTE_CONNECT_SERVICE: OnceLock<Arc<RwLock<Option<RemoteConnectService>>>> =
     OnceLock::new();
 
+#[derive(Debug, Default, Clone)]
+struct LanMonitorDesktopState {
+    access_url: Option<String>,
+    pairing_code: Option<String>,
+    last_error: Option<String>,
+}
+
+static LAN_MONITOR_STATE: OnceLock<Arc<RwLock<LanMonitorDesktopState>>> = OnceLock::new();
+
 /// In-memory account session (token + master key). The master key is never
 /// persisted to disk; it is lost on restart and re-derived on next login.
 static ACCOUNT_SESSION: OnceLock<Arc<RwLock<Option<AccountSession>>>> = OnceLock::new();
@@ -357,6 +366,7 @@ pub async fn account_get_credential_hint() -> Option<AccountHint> {
 
 /// Tauri resource directory path for mobile-web, set during app setup.
 static MOBILE_WEB_RESOURCE_PATH: OnceLock<PathBuf> = OnceLock::new();
+static LAN_MONITOR_RESOURCE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 fn get_service_holder() -> &'static Arc<RwLock<Option<RemoteConnectService>>> {
     REMOTE_CONNECT_SERVICE.get_or_init(|| Arc::new(RwLock::new(None)))
@@ -367,6 +377,11 @@ fn get_service_holder() -> &'static Arc<RwLock<Option<RemoteConnectService>>> {
 pub fn set_mobile_web_resource_path(path: PathBuf) {
     log::info!("Registered mobile-web resource path: {}", path.display());
     let _ = MOBILE_WEB_RESOURCE_PATH.set(path);
+}
+
+pub fn set_lan_monitor_resource_path(path: PathBuf) {
+    log::info!("Registered LAN monitor resource path: {}", path.display());
+    let _ = LAN_MONITOR_RESOURCE_PATH.set(path);
 }
 
 /// Called from Tauri setup to eagerly initialize the remote connect service
@@ -493,6 +508,7 @@ async fn ensure_service() -> Result<(), String> {
 
     let config = RemoteConnectConfig {
         mobile_web_dir: detect_mobile_web_dir(),
+        lan_monitor_web_dir: detect_lan_monitor_web_dir(),
         ..RemoteConnectConfig::default()
     };
     let service =
@@ -571,6 +587,38 @@ fn detect_mobile_web_dir() -> Option<String> {
     None
 }
 
+fn detect_lan_monitor_web_dir() -> Option<String> {
+    if let Ok(dir) = std::env::var("BITFUN_LAN_MONITOR_WEB_DIR") {
+        let path = std::path::Path::new(&dir);
+        if is_valid_lan_monitor_web_dir(path) {
+            log::info!("Using BITFUN_LAN_MONITOR_WEB_DIR: {dir}");
+            return Some(dir);
+        }
+        log::warn!("BITFUN_LAN_MONITOR_WEB_DIR set but lan-monitor.html not found: {dir}");
+    }
+    if let Some(resource_path) = LAN_MONITOR_RESOURCE_PATH.get() {
+        if is_valid_lan_monitor_web_dir(resource_path) {
+            return Some(resource_path.to_string_lossy().into_owned());
+        }
+    }
+    let cwd = std::env::current_dir().ok()?;
+    let candidates = [
+        cwd.join("dist"),
+        cwd.join("../../../dist"),
+        cwd.join("../../dist"),
+    ];
+    for candidate in candidates {
+        if is_valid_lan_monitor_web_dir(&candidate) {
+            return candidate
+                .canonicalize()
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned());
+        }
+    }
+    log::warn!("LAN monitor web build not found; run pnpm run build:web");
+    None
+}
+
 fn detect_from_exe() -> Option<String> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
@@ -629,6 +677,10 @@ fn is_valid_mobile_web_dir(dir: &std::path::Path) -> bool {
     dir.join("index.html").exists() && dir.join("assets").is_dir()
 }
 
+fn is_valid_lan_monitor_web_dir(dir: &std::path::Path) -> bool {
+    dir.join("lan-monitor.html").exists() && dir.join("assets").is_dir()
+}
+
 // ── Request / Response DTOs ────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -636,6 +688,27 @@ pub struct StartRemoteConnectRequest {
     pub method: String,
     pub custom_server_url: Option<String>,
     pub lan_ip: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LanMonitorStartRequest {
+    pub lan_ip: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LanMonitorStatusResponse {
+    pub is_running: bool,
+    pub is_connected: bool,
+    pub pairing_state: PairingState,
+    pub access_url: Option<String>,
+    pub pairing_code: Option<String>,
+    pub peer_device_name: Option<String>,
+    pub connected_device_count: usize,
+    pub last_error: Option<String>,
+}
+
+fn get_lan_monitor_state() -> &'static Arc<RwLock<LanMonitorDesktopState>> {
+    LAN_MONITOR_STATE.get_or_init(|| Arc::new(RwLock::new(LanMonitorDesktopState::default())))
 }
 
 #[derive(Debug, Serialize)]
@@ -902,6 +975,12 @@ pub async fn remote_connect_get_methods() -> Result<Vec<ConnectionMethodInfo>, S
                 available: true,
                 description: "Same local network".into(),
             },
+            ConnectionMethod::LanMonitor { .. } => ConnectionMethodInfo {
+                id: "lan_monitor".into(),
+                name: "LAN Monitor".into(),
+                available: true,
+                description: "Read-only desktop monitoring on the local network".into(),
+            },
             ConnectionMethod::Ngrok => ConnectionMethodInfo {
                 id: "ngrok".into(),
                 name: "ngrok".into(),
@@ -976,6 +1055,12 @@ pub async fn remote_connect_start(
     let holder = get_service_holder();
     let guard = holder.read().await;
     let service = guard.as_ref().ok_or("service not initialized")?;
+    if matches!(
+        service.active_method().await,
+        Some(ConnectionMethod::LanMonitor { .. })
+    ) {
+        return Err("Stop LAN monitor before starting another remote relay".to_string());
+    }
     service
         .start(method)
         .await
@@ -990,6 +1075,94 @@ pub async fn remote_connect_stop() -> Result<(), String> {
         service.stop_relay().await;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn lan_monitor_start(
+    request: LanMonitorStartRequest,
+) -> Result<LanMonitorStatusResponse, String> {
+    ensure_service().await?;
+    let holder = get_service_holder();
+    let guard = holder.read().await;
+    let service = guard.as_ref().ok_or("service not initialized")?;
+    if let Some(active_method) = service.active_method().await {
+        let message = match active_method {
+            ConnectionMethod::LanMonitor { .. } => "LAN monitor is already running",
+            _ => "Stop the active LAN/ngrok relay before starting LAN monitor",
+        }
+        .to_string();
+        get_lan_monitor_state().write().await.last_error = Some(message.clone());
+        return Err(message);
+    }
+    let method = ConnectionMethod::LanMonitor {
+        ip: request.lan_ip.filter(|ip| !ip.trim().is_empty()),
+    };
+    let result = match service.start(method).await {
+        Ok(result) => result,
+        Err(error) => {
+            let message = format!("start LAN monitor: {error}");
+            get_lan_monitor_state().write().await.last_error = Some(message.clone());
+            return Err(message);
+        }
+    };
+    {
+        let mut state = get_lan_monitor_state().write().await;
+        state.access_url = result.qr_url;
+        state.pairing_code = result.bot_pairing_code;
+        state.last_error = None;
+    }
+    drop(guard);
+    lan_monitor_status().await
+}
+
+#[tauri::command]
+pub async fn lan_monitor_stop() -> Result<(), String> {
+    let holder = get_service_holder();
+    let guard = holder.read().await;
+    if let Some(service) = guard.as_ref() {
+        if matches!(
+            service.active_method().await,
+            Some(ConnectionMethod::LanMonitor { .. })
+        ) {
+            service.stop_relay().await;
+        }
+    }
+    *get_lan_monitor_state().write().await = LanMonitorDesktopState::default();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn lan_monitor_status() -> Result<LanMonitorStatusResponse, String> {
+    ensure_service().await?;
+    let holder = get_service_holder();
+    let guard = holder.read().await;
+    let service = guard.as_ref().ok_or("service not initialized")?;
+    let is_running = matches!(
+        service.active_method().await,
+        Some(ConnectionMethod::LanMonitor { .. })
+    );
+    let pairing_state = if is_running {
+        service.pairing_state().await
+    } else {
+        PairingState::Idle
+    };
+    let is_connected = pairing_state == PairingState::Connected;
+    let peer_device_name = is_running.then(|| async { service.peer_device_name().await });
+    let peer_device_name = match peer_device_name {
+        Some(future) => future.await,
+        None => None,
+    };
+    let state = get_lan_monitor_state().read().await.clone();
+    Ok(LanMonitorStatusResponse {
+        is_running,
+        is_connected,
+        pairing_state,
+        access_url: is_running.then_some(state.access_url).flatten(),
+        pairing_code: is_running.then_some(state.pairing_code).flatten(),
+        peer_device_name,
+        connected_device_count: usize::from(is_connected),
+        last_error: state.last_error,
+    })
 }
 
 #[tauri::command]

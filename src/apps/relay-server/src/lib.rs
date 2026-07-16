@@ -251,6 +251,10 @@ pub fn build_relay_router(
         .route("/health", get(routes::api::health_check))
         .route("/api/info", get(routes::api::server_info))
         .route(
+            "/api/lan-monitor/bootstrap",
+            get(routes::api::lan_monitor_bootstrap),
+        )
+        .route(
             "/api/auth/login/challenge",
             post(routes::auth::login_challenge),
         )

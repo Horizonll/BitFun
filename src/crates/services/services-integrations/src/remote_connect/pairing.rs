@@ -68,6 +68,71 @@ pub struct PairingProtocol {
     peer_device_name: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct LanMonitorPairingGuard {
+    pairing_code: String,
+    expires_at_ms: u64,
+    failed_attempts: u8,
+    locked_until_ms: u64,
+    bound_install_id: Option<String>,
+}
+
+impl LanMonitorPairingGuard {
+    pub const CODE_TTL_MS: u64 = 10 * 60 * 1000;
+    pub const LOCKOUT_MS: u64 = 60 * 1000;
+    pub const MAX_FAILED_ATTEMPTS: u8 = 3;
+
+    pub fn new(now_ms: u64) -> Self {
+        Self {
+            pairing_code: PairingProtocol::generate_bot_pairing_code(),
+            expires_at_ms: now_ms.saturating_add(Self::CODE_TTL_MS),
+            failed_attempts: 0,
+            locked_until_ms: 0,
+            bound_install_id: None,
+        }
+    }
+
+    pub fn pairing_code(&self) -> &str {
+        &self.pairing_code
+    }
+
+    pub fn verify(
+        &mut self,
+        submitted_code: &str,
+        install_id: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let install_id = install_id.trim();
+        if install_id.is_empty() {
+            return Err("Missing browser installation ID".to_string());
+        }
+        if now_ms >= self.expires_at_ms {
+            return Err("LAN monitor pairing code expired".to_string());
+        }
+        if now_ms < self.locked_until_ms {
+            return Err("Too many LAN monitor pairing attempts; try again later".to_string());
+        }
+        if submitted_code.trim() != self.pairing_code {
+            self.failed_attempts = self.failed_attempts.saturating_add(1);
+            if self.failed_attempts >= Self::MAX_FAILED_ATTEMPTS {
+                self.failed_attempts = 0;
+                self.locked_until_ms = now_ms.saturating_add(Self::LOCKOUT_MS);
+            }
+            return Err("Invalid LAN monitor pairing code".to_string());
+        }
+        if let Some(bound_install_id) = self.bound_install_id.as_deref() {
+            if bound_install_id != install_id {
+                return Err("LAN monitor is already paired with another browser".to_string());
+            }
+        } else {
+            self.bound_install_id = Some(install_id.to_string());
+        }
+        self.failed_attempts = 0;
+        self.locked_until_ms = 0;
+        Ok(())
+    }
+}
+
 impl PairingProtocol {
     pub fn new(device_identity: DeviceIdentity) -> Self {
         Self {
@@ -278,5 +343,43 @@ mod tests {
         let code = PairingProtocol::generate_bot_pairing_code();
         assert_eq!(code.len(), 6);
         assert!(code.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn lan_monitor_pairing_guard_limits_failures_and_binds_installation() {
+        let mut guard = LanMonitorPairingGuard::new(1_000);
+        let code = guard.pairing_code().to_string();
+
+        assert!(guard.verify("000000", "browser-a", 1_001).is_err());
+        assert!(guard.verify("000000", "browser-a", 1_002).is_err());
+        assert!(guard.verify("000000", "browser-a", 1_003).is_err());
+        assert!(guard.verify(&code, "browser-a", 1_004).is_err());
+        assert!(guard
+            .verify(
+                &code,
+                "browser-a",
+                1_003 + LanMonitorPairingGuard::LOCKOUT_MS
+            )
+            .is_ok());
+        assert!(guard
+            .verify(
+                &code,
+                "browser-b",
+                1_004 + LanMonitorPairingGuard::LOCKOUT_MS
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn lan_monitor_pairing_guard_expires_code() {
+        let mut guard = LanMonitorPairingGuard::new(5_000);
+        let code = guard.pairing_code().to_string();
+        assert!(guard
+            .verify(
+                &code,
+                "browser-a",
+                5_000 + LanMonitorPairingGuard::CODE_TTL_MS,
+            )
+            .is_err());
     }
 }

@@ -5,7 +5,7 @@
   "build": {
     "beforeDevCommand": "pnpm run dev:web",
     "devUrl": "http://localhost:1422",
-    "beforeBuildCommand": "pnpm run build:web && pnpm run prepare:mobile-web",
+    "beforeBuildCommand": "pnpm run build:web && pnpm run prepare:mobile-web && pnpm run prepare:lan-monitor",
     "frontendDist": "../../../dist"
   },
   "bundle": {
@@ -19,6 +19,7 @@
     ],
     "resources": {
       "../../mobile-web/dist": "mobile-web/dist",
+      "resources/lan-monitor": "lan-monitor",
       "resources/worker_host.js": "resources/worker_host.js"
     },
     "linux": {

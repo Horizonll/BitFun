@@ -79,6 +79,25 @@ pub async fn server_info() -> Json<ServerInfo> {
     })
 }
 
+#[derive(Serialize)]
+pub struct LanMonitorBootstrapResponse {
+    pub room_id: String,
+    pub public_key: String,
+}
+
+pub async fn lan_monitor_bootstrap(
+    State(state): State<AppState>,
+) -> Result<Json<LanMonitorBootstrapResponse>, StatusCode> {
+    let (room_id, public_key) = state
+        .room_manager
+        .single_desktop_pairing_target()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(LanMonitorBootstrapResponse {
+        room_id,
+        public_key,
+    }))
+}
+
 // ── Pair & Command (HTTP-to-WS bridge) ────────────────────────────────────
 
 #[derive(Deserialize)]

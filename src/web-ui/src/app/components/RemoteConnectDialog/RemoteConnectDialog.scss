@@ -230,6 +230,64 @@
   font-size: 12.5px;
 }
 
+.bitfun-remote-connect__lan-monitor-title {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--color-text-primary);
+}
+
+.bitfun-remote-connect__lan-monitor-details {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.bitfun-remote-connect__lan-monitor-url {
+  display: grid;
+  width: 100%;
+  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+
+  span {
+    color: var(--color-text-muted);
+  }
+
+  code {
+    overflow: hidden;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  button {
+    padding: 5px 9px;
+    border: 1px solid var(--color-border-default);
+    border-radius: 6px;
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+  }
+}
+
+.bitfun-remote-connect__lan-monitor-code {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  span {
+    color: var(--color-text-muted);
+  }
+
+  strong {
+    color: var(--color-accent-500);
+    font-family: var(--font-family-mono);
+    font-size: 26px;
+    letter-spacing: 0.16em;
+  }
+}
+
 // ==================== Connected ====================
 
 .bitfun-remote-connect__connected {

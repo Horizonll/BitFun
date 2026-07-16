@@ -32,6 +32,11 @@ import { i18nAPI } from '@/infrastructure/api/service-api/I18nAPI';
 
 import { createLogger } from '@/shared/utils/logger';
 import { logDuration, measureSync, nowMs, elapsedMs } from '@/shared/utils/timing';
+import {
+  formatDateForLocale,
+  formatNumberForLocale,
+  formatRelativeTimeForLocale,
+} from './localeFormatting';
 
 const log = createLogger('I18nService');
 
@@ -453,12 +458,12 @@ export class I18nService {
 
    
   formatDate(date: Date | number, options?: Intl.DateTimeFormatOptions): string {
-    return new Intl.DateTimeFormat(this.currentLocaleId, options).format(date);
+    return formatDateForLocale(this.currentLocaleId, date, options);
   }
 
    
   formatNumber(number: number, options?: Intl.NumberFormatOptions): string {
-    return new Intl.NumberFormat(this.currentLocaleId, options).format(number);
+    return formatNumberForLocale(this.currentLocaleId, number, options);
   }
 
    
@@ -471,8 +476,6 @@ export class I18nService {
 
    
   formatRelativeTime(date: Date | number, unit?: Intl.RelativeTimeFormatUnit): string {
-    const rtf = new Intl.RelativeTimeFormat(this.currentLocaleId, { numeric: 'auto' });
-    
     const now = Date.now();
     const target = typeof date === 'number' ? date : date.getTime();
     const diff = target - now;
@@ -484,17 +487,21 @@ export class I18nService {
     const days = Math.round(diff / 86400000);
     
     if (unit) {
-      return rtf.format(Math.round(diff / this.getUnitMilliseconds(unit)), unit);
+      return formatRelativeTimeForLocale(
+        this.currentLocaleId,
+        Math.round(diff / this.getUnitMilliseconds(unit)),
+        unit,
+      );
     }
     
     if (Math.abs(seconds) < 60) {
-      return rtf.format(seconds, 'second');
+      return formatRelativeTimeForLocale(this.currentLocaleId, seconds, 'second');
     } else if (Math.abs(minutes) < 60) {
-      return rtf.format(minutes, 'minute');
+      return formatRelativeTimeForLocale(this.currentLocaleId, minutes, 'minute');
     } else if (Math.abs(hours) < 24) {
-      return rtf.format(hours, 'hour');
+      return formatRelativeTimeForLocale(this.currentLocaleId, hours, 'hour');
     } else {
-      return rtf.format(days, 'day');
+      return formatRelativeTimeForLocale(this.currentLocaleId, days, 'day');
     }
   }
 

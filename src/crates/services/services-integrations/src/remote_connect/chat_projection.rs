@@ -78,6 +78,47 @@ fn compress_remote_chat_data_url_for_mobile(data_url: &str) -> String {
     data_url.to_string()
 }
 
+fn safe_remote_chat_image(name: &str, data_url: &str) -> Option<ChatImageAttachment> {
+    const MAX_DATA_URL_LENGTH: usize = 2 * 1024 * 1024;
+
+    if data_url.len() > MAX_DATA_URL_LENGTH {
+        return None;
+    }
+    let comma_pos = data_url.find(',')?;
+    let header = data_url[..comma_pos].to_ascii_lowercase();
+    if !matches!(
+        header.as_str(),
+        "data:image/png;base64"
+            | "data:image/jpeg;base64"
+            | "data:image/jpg;base64"
+            | "data:image/webp;base64"
+            | "data:image/gif;base64"
+    ) {
+        return None;
+    }
+    let encoded = &data_url[comma_pos + 1..];
+    if encoded.is_empty() || BASE64.decode(encoded).is_err() {
+        return None;
+    }
+
+    let safe_name = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("image")
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(160)
+        .collect::<String>();
+    Some(ChatImageAttachment {
+        name: if safe_name.trim().is_empty() {
+            "image".to_string()
+        } else {
+            safe_name
+        },
+        data_url: compress_remote_chat_data_url_for_mobile(data_url),
+    })
+}
+
 fn remote_chat_user_images_from_metadata(
     metadata: Option<&serde_json::Value>,
 ) -> Vec<ChatImageAttachment> {
@@ -88,10 +129,9 @@ fn remote_chat_user_images_from_metadata(
             images
                 .iter()
                 .filter_map(|image| {
-                    let name = image.get("name")?.as_str()?.to_string();
+                    let name = image.get("name")?.as_str()?;
                     let raw_url = image.get("data_url")?.as_str()?;
-                    let data_url = compress_remote_chat_data_url_for_mobile(raw_url);
-                    Some(ChatImageAttachment { name, data_url })
+                    safe_remote_chat_image(name, raw_url)
                 })
                 .collect()
         })

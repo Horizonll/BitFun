@@ -187,11 +187,20 @@ impl RoomManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn get_desktop_public_key(&self, room_id: &str) -> Option<String> {
         self.rooms
             .get(room_id)
             .and_then(|r| r.desktop.as_ref().map(|d| d.public_key.clone()))
+    }
+
+    pub fn single_desktop_pairing_target(&self) -> Option<(String, String)> {
+        let mut targets = self.rooms.iter().filter_map(|room| {
+            room.desktop
+                .as_ref()
+                .map(|desktop| (room.room_id.clone(), desktop.public_key.clone()))
+        });
+        let target = targets.next()?;
+        targets.next().is_none().then_some(target)
     }
 
     pub fn try_register_pending(

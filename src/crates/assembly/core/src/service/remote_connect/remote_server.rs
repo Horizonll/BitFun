@@ -11,17 +11,17 @@
 use crate::service_agent_runtime::{CoreRemoteSessionTrackerHost, CoreServiceAgentRuntime};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::encryption;
 use bitfun_services_integrations::remote_connect::{
     build_remote_image_contexts, cancel_remote_task, generate_remote_initial_sync,
-    handle_remote_command, handle_remote_interaction_command, handle_remote_poll_command,
-    handle_remote_session_command, handle_remote_workspace_command,
-    handle_remote_workspace_file_command, submit_remote_dialog, RemoteCancelTaskRequest,
-    RemoteCommandRuntimeHost, RemoteConnectSubmissionSource, RemoteDialogSubmissionPolicy,
-    RemoteDialogSubmissionRequest, RemoteDialogSubmitOutcome, RemoteImageContext,
-    RemoteSessionTrackerRegistry,
+    handle_lan_monitor_command, handle_remote_command, handle_remote_interaction_command,
+    handle_remote_poll_command, handle_remote_session_command, handle_remote_workspace_command,
+    handle_remote_workspace_file_command, submit_remote_dialog, LanMonitorCommand,
+    LanMonitorMessageGuard, RemoteCancelTaskRequest, RemoteCommandRuntimeHost,
+    RemoteConnectSubmissionSource, RemoteDialogSubmissionPolicy, RemoteDialogSubmissionRequest,
+    RemoteDialogSubmitOutcome, RemoteImageContext, RemoteSessionTrackerRegistry,
 };
 pub use bitfun_services_integrations::remote_connect::{
     ActiveTurnSnapshot, AssistantEntry, ChatImageAttachment, ChatMessage, ChatMessageItem,
@@ -198,6 +198,14 @@ impl RemoteCommandRuntimeHost for CoreRemoteCommandRuntimeHost<'_> {
         handle_remote_interaction_command(&host, command).await
     }
 
+    async fn handle_lan_monitor_command(&self, command: &LanMonitorCommand) -> RemoteResponse {
+        let host = match CoreServiceAgentRuntime::lan_monitor_host(self.dispatcher) {
+            Ok(host) => host,
+            Err(message) => return RemoteResponse::Error { message },
+        };
+        handle_lan_monitor_command(&host, command).await
+    }
+
     async fn handle_device_command(&self, command: &RemoteCommand) -> RemoteResponse {
         match command {
             RemoteCommand::CreateWorkspace { path } => {
@@ -261,12 +269,23 @@ impl RemoteCommandRuntimeHost for CoreRemoteCommandRuntimeHost<'_> {
 /// Bridges encrypted remote payloads to the integrations-owned command router.
 pub struct RemoteServer {
     shared_secret: [u8; 32],
+    source: RemoteConnectSubmissionSource,
+    lan_monitor_guard: Option<Mutex<LanMonitorMessageGuard>>,
 }
 
 impl RemoteServer {
     pub fn new(shared_secret: [u8; 32]) -> Self {
+        Self::new_with_source(shared_secret, RemoteConnectSubmissionSource::Relay)
+    }
+
+    pub fn new_with_source(shared_secret: [u8; 32], source: RemoteConnectSubmissionSource) -> Self {
         get_or_init_global_dispatcher();
-        Self { shared_secret }
+        Self {
+            shared_secret,
+            source,
+            lan_monitor_guard: (source == RemoteConnectSubmissionSource::LanMonitor)
+                .then(|| Mutex::new(LanMonitorMessageGuard::default())),
+        }
     }
 
     pub fn shared_secret(&self) -> &[u8; 32] {
@@ -280,10 +299,24 @@ impl RemoteServer {
     ) -> Result<(RemoteCommand, Option<String>)> {
         let json = encryption::decrypt_from_base64(&self.shared_secret, encrypted_data, nonce)?;
         let value: Value = serde_json::from_str(&json).map_err(|e| anyhow!("parse json: {e}"))?;
-        let request_id = value
-            .get("_request_id")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        let request_id = if let Some(guard) = self.lan_monitor_guard.as_ref() {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            Some(
+                guard
+                    .lock()
+                    .map_err(|_| anyhow!("LAN monitor replay guard is unavailable"))?
+                    .validate_envelope(&value, nonce, now_ms)
+                    .map_err(|message| anyhow!(message))?,
+            )
+        } else {
+            value
+                .get("_request_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        };
         let cmd: RemoteCommand =
             serde_json::from_value(value).map_err(|e| anyhow!("parse command: {e}"))?;
         Ok((cmd, request_id))
@@ -306,7 +339,7 @@ impl RemoteServer {
     pub async fn dispatch(&self, cmd: &RemoteCommand) -> RemoteResponse {
         let dispatcher = get_or_init_global_dispatcher();
         let host = CoreRemoteCommandRuntimeHost::new(dispatcher.as_ref());
-        handle_remote_command(&host, cmd, RemoteConnectSubmissionSource::Relay).await
+        handle_remote_command(&host, cmd, self.source).await
     }
 
     pub async fn generate_initial_sync(
@@ -373,6 +406,52 @@ mod tests {
         let value: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["resp"], "pong");
         assert_eq!(value["_request_id"], "req_xyz");
+    }
+
+    #[test]
+    fn lan_monitor_bridge_rejects_replayed_and_expired_commands() {
+        let keypair = KeyPair::generate();
+        let shared = keypair.derive_shared_secret(&keypair.public_key_bytes());
+        let bridge =
+            RemoteServer::new_with_source(shared, RemoteConnectSubmissionSource::LanMonitor);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let command = serde_json::json!({
+            "cmd": "lan_monitor",
+            "request": { "action": "ping" },
+            "_protocol_version": 1,
+            "_issued_at_ms": now_ms,
+            "_request_id": "request-0001",
+        });
+        let (encrypted, nonce) =
+            encryption::encrypt_to_base64(&shared, &command.to_string()).unwrap();
+
+        let (decoded, request_id) = bridge.decrypt_command(&encrypted, &nonce).unwrap();
+        assert!(matches!(
+            decoded,
+            RemoteCommand::LanMonitor {
+                request: LanMonitorCommand::Ping
+            }
+        ));
+        assert_eq!(request_id.as_deref(), Some("request-0001"));
+        assert!(bridge.decrypt_command(&encrypted, &nonce).is_err());
+
+        let expired = serde_json::json!({
+            "cmd": "lan_monitor",
+            "request": { "action": "ping" },
+            "_protocol_version": 1,
+            "_issued_at_ms": now_ms
+                .saturating_sub(
+                    bitfun_services_integrations::remote_connect::LAN_MONITOR_COMMAND_MAX_AGE_MS,
+                )
+                .saturating_sub(1),
+            "_request_id": "request-0002",
+        });
+        let (encrypted, nonce) =
+            encryption::encrypt_to_base64(&shared, &expired.to_string()).unwrap();
+        assert!(bridge.decrypt_command(&encrypted, &nonce).is_err());
     }
 
     #[tokio::test]
@@ -578,6 +657,7 @@ mod tests {
                 start_ms: Some(42),
                 input_preview: Some("{\"path\":\"README.md\"}".to_string()),
                 tool_input: None,
+                monitor_input: None,
             }],
             round_index: 2,
             items: Some(vec![ChatMessageItem {

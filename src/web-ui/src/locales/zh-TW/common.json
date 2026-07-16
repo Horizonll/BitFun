@@ -547,6 +547,19 @@
     "syncPhaseListingSessions": "正在掃描本地工作階段…",
     "syncPhaseExportingSessions": "正在備份工作階段 {{current}}/{{total}}"
   },
+  "lanMonitor": {
+    "desktopTitle": "VR / 區域網路監控",
+    "desktopDescription": "向同一網路下的 VR 瀏覽器提供桌面工作階段監控頁面。",
+    "start": "啟動區域網路監控",
+    "stop": "停止區域網路監控",
+    "accessUrl": "瀏覽器網址",
+    "pairingCodeLabel": "配對碼",
+    "connectedDevice": "已連線裝置",
+    "waitingDevice": "等待 VR 瀏覽器連線",
+    "copy": "複製",
+    "copied": "已複製",
+    "firewallHint": "若頁面無法開啟，請允許 BitFun 通過系統防火牆，並確認兩台裝置連接到同一網路。"
+  },
   "remoteConnect": {
     "tabNgrok": "內網穿透",
     "tabCustomServer": "自建伺服器",

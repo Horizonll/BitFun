@@ -614,6 +614,27 @@ pub async fn run() {
                 );
             }
 
+            {
+                let step_started = Instant::now();
+                for candidate in ["lan-monitor", "dist"] {
+                    if let Ok(path) = app
+                        .path()
+                        .resolve(candidate, tauri::path::BaseDirectory::Resource)
+                    {
+                        if path.join("lan-monitor.html").exists() {
+                            log::info!("Found bundled LAN monitor at: {}", path.display());
+                            api::remote_connect_api::set_lan_monitor_resource_path(path);
+                            break;
+                        }
+                    }
+                }
+                startup_trace.record_elapsed_step(
+                    "native_setup",
+                    "resolve_lan_monitor_resource",
+                    step_started,
+                );
+            }
+
             let app_handle = app.handle().clone();
             let workspace_startup_bootstrap_snapshot = {
                 let app_state: tauri::State<'_, api::app_state::AppState> = app.state();
@@ -1243,6 +1264,9 @@ pub async fn run() {
             api::remote_connect_api::remote_connect_get_methods,
             api::remote_connect_api::remote_connect_start,
             api::remote_connect_api::remote_connect_stop,
+            api::remote_connect_api::lan_monitor_start,
+            api::remote_connect_api::lan_monitor_stop,
+            api::remote_connect_api::lan_monitor_status,
             api::remote_connect_api::remote_connect_stop_bot,
             api::remote_connect_api::remote_connect_status,
             api::remote_connect_api::remote_connect_get_form_state,

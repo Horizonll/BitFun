@@ -294,7 +294,7 @@ fn remote_chat_projection_owner_extracts_images_and_display_text() {
         "original_text": " original question ",
         "images": [
             {
-                "name": "screenshot.png",
+                "name": "C:\\private\\screenshot.png",
                 "data_url": "data:image/png;base64,abcd"
             },
             {
@@ -312,16 +312,10 @@ fn remote_chat_projection_owner_extracts_images_and_display_text() {
 
     assert_eq!(
         projection.images,
-        vec![
-            ChatImageAttachment {
-                name: "screenshot.png".to_string(),
-                data_url: "data:image/png;base64,abcd".to_string(),
-            },
-            ChatImageAttachment {
-                name: "raw-image".to_string(),
-                data_url: "not-a-data-url".to_string(),
-            },
-        ]
+        vec![ChatImageAttachment {
+            name: "screenshot.png".to_string(),
+            data_url: "data:image/png;base64,abcd".to_string(),
+        }]
     );
     assert_eq!(projection.content, " original question ");
     assert_eq!(
@@ -1018,6 +1012,40 @@ async fn remote_connect_command_owner_preserves_cancel_and_group_routing() {
         RemoteCancelTaskRequest {
             session_id: "session-1".to_string(),
             requested_turn_id: Some("turn-1".to_string()),
+        }
+    );
+}
+
+#[tokio::test]
+async fn remote_connect_command_owner_denies_non_monitor_commands_in_monitor_mode() {
+    let host = RecordingCommandHost::default();
+
+    let denied = handle_remote_command(
+        &host,
+        &RemoteCommand::GetWorkspaceInfo,
+        RemoteConnectSubmissionSource::LanMonitor,
+    )
+    .await;
+    assert_eq!(
+        denied,
+        RemoteResponse::Error {
+            message: "Command is not allowed in LAN monitor mode".to_string(),
+        }
+    );
+    assert!(host.events().is_empty());
+
+    let wrong_connection = handle_remote_command(
+        &host,
+        &RemoteCommand::LanMonitor {
+            request: bitfun_services_integrations::remote_connect::LanMonitorCommand::Ping,
+        },
+        RemoteConnectSubmissionSource::Relay,
+    )
+    .await;
+    assert_eq!(
+        wrong_connection,
+        RemoteResponse::Error {
+            message: "LAN monitor commands require a LAN monitor connection".to_string(),
         }
     );
 }
@@ -1852,6 +1880,7 @@ fn remote_connect_message_dtos_keep_current_wire_shape() {
             start_ms: Some(42),
             input_preview: Some("{\"cmd\":\"git status\"}".to_string()),
             tool_input: None,
+            monitor_input: None,
         }]),
         thinking: None,
         items: Some(vec![ChatMessageItem {
@@ -1963,6 +1992,7 @@ fn remote_connect_response_wire_shape_lives_in_owner_contract() {
             start_ms: Some(42),
             input_preview: Some("{\"path\":\"README.md\"}".to_string()),
             tool_input: None,
+            monitor_input: None,
         }],
         round_index: 2,
         items: Some(vec![ChatMessageItem {

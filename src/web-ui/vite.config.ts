@@ -101,6 +101,12 @@ export default defineConfig(({ mode, command }) => {
     outDir: '../../dist',
     // Empty the output directory
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        'lan-monitor': path.resolve(__dirname, 'lan-monitor.html'),
+      },
+    },
   }
   };
 });

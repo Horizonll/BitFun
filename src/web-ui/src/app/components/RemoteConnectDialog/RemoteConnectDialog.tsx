@@ -16,6 +16,7 @@ import {
   type ConnectionResult,
   type RemoteConnectStatus,
   type LanNetworkInterface,
+  type LanMonitorStatus,
 } from '@/infrastructure/api/service-api/RemoteConnectAPI';
 import {
   RemoteConnectDisclaimerContent,
@@ -28,7 +29,7 @@ import './RemoteConnectDialog.scss';
 
 // ── Types ────────────────────────────────────────────────────────────
 
-type ActiveGroup = 'network' | 'bot';
+type ActiveGroup = 'network' | 'monitor' | 'bot';
 type NetworkTab = 'lan' | 'ngrok' | 'bitfun_server' | 'custom_server';
 type BotTab = 'telegram' | 'feishu' | 'weixin';
 
@@ -80,6 +81,7 @@ function pickLocalizedUrl(urls: Partial<Record<LocaleId, string>>, locale: Local
 
 const methodToNetworkTab = (method: string | null | undefined): NetworkTab | null => {
   if (!method) return null;
+  if (method.startsWith('LanMonitor')) return null;
   if (method.startsWith('Lan')) return 'lan';
   if (method.startsWith('Ngrok')) return 'ngrok';
   if (method.startsWith('BitfunServer')) return 'bitfun_server';
@@ -114,6 +116,7 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
 
   const [connectionResult, setConnectionResult] = useState<ConnectionResult | null>(null);
   const [status, setStatus] = useState<RemoteConnectStatus | null>(null);
+  const [lanMonitorStatus, setLanMonitorStatus] = useState<LanMonitorStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lanNetworkInfo, setLanNetworkInfo] = useState<{
@@ -127,6 +130,7 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
   const [botVerboseMode, setBotVerboseMode] = useState<boolean>(false);
 
   const [qrCopied, setQrCopied] = useState(false);
+  const [lanMonitorCopied, setLanMonitorCopied] = useState(false);
   const [customUrl, setCustomUrl] = useState('');
   const [tgToken, setTgToken] = useState('');
   const [feishuAppId, setFeishuAppId] = useState('');
@@ -189,6 +193,13 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
     const checkExisting = async () => {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
+          const monitorStatus = await remoteConnectAPI.getLanMonitorStatus();
+          if (cancelled) return;
+          setLanMonitorStatus(monitorStatus);
+          if (monitorStatus.is_running) {
+            setActiveGroup('monitor');
+            return;
+          }
           const s = await remoteConnectAPI.getStatus();
           if (cancelled) return;
           setStatus(s);
@@ -225,7 +236,10 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
   }, [isOpen, startPolling]);
 
   useEffect(() => {
-    if (!isOpen || activeGroup !== 'network' || networkTab !== 'lan') return;
+    if (
+      !isOpen
+      || (activeGroup !== 'monitor' && (activeGroup !== 'network' || networkTab !== 'lan'))
+    ) return;
     let cancelled = false;
     const loadLanNetworkInfo = async () => {
       const info = await remoteConnectAPI.getLanNetworkInfo();
@@ -249,6 +263,14 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
       cancelled = true;
     };
   }, [isOpen, activeGroup, networkTab]);
+
+  useEffect(() => {
+    if (!isOpen || activeGroup !== 'monitor' || !lanMonitorStatus?.is_running) return;
+    const timer = window.setInterval(() => {
+      void remoteConnectAPI.getLanMonitorStatus().then(setLanMonitorStatus).catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeGroup, isOpen, lanMonitorStatus?.is_running]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -471,6 +493,39 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
       setStatus(s);
     } catch { /* best effort */ }
   }, []);
+
+  const handleStartLanMonitor = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const monitorStatus = await remoteConnectAPI.startLanMonitor(selectedLanIp || undefined);
+      setLanMonitorStatus(monitorStatus);
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : String(startError));
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedLanIp]);
+
+  const handleStopLanMonitor = useCallback(async () => {
+    setLoading(true);
+    try {
+      await remoteConnectAPI.stopLanMonitor();
+      setLanMonitorStatus(await remoteConnectAPI.getLanMonitorStatus());
+      setError(null);
+    } catch (stopError) {
+      setError(stopError instanceof Error ? stopError.message : String(stopError));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const handleCopyLanMonitorUrl = useCallback(async () => {
+    if (!lanMonitorStatus?.access_url) return;
+    await navigator.clipboard.writeText(lanMonitorStatus.access_url);
+    setLanMonitorCopied(true);
+    window.setTimeout(() => setLanMonitorCopied(false), 2000);
+  }, [lanMonitorStatus?.access_url]);
 
   const handleDisconnectBot = useCallback(async () => {
     try {
@@ -737,6 +792,82 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
     );
   };
 
+  const renderLanMonitorContent = () => (
+    <div className="bitfun-remote-connect__body bitfun-remote-connect__lan-monitor">
+      {renderInfoCard(
+        <>
+          <strong className="bitfun-remote-connect__lan-monitor-title">
+            {t('lanMonitor.desktopTitle')}
+          </strong>
+          <p className="bitfun-remote-connect__info-text">
+            {t('lanMonitor.desktopDescription')}
+          </p>
+          {!lanMonitorStatus?.is_running && lanNetworkInfo?.availableIps.length ? (
+            <div className="bitfun-remote-connect__lan-ip-select">
+              <span className="bitfun-remote-connect__info-meta-label">
+                {t('remoteConnect.currentIp')}
+              </span>
+              <Select
+                className="bitfun-remote-connect__lan-ip-dropdown"
+                size="small"
+                value={selectedLanIp}
+                onChange={value => setSelectedLanIp(String(value))}
+                options={lanNetworkInfo.availableIps.map(entry => ({
+                  label: entry.ip,
+                  value: entry.ip,
+                  description: entry.interface_name,
+                }))}
+              />
+            </div>
+          ) : null}
+        </>,
+      )}
+      {lanMonitorStatus?.is_running && (
+        <div className="bitfun-remote-connect__lan-monitor-details">
+          {lanMonitorStatus.access_url && (
+            <div className="bitfun-remote-connect__lan-monitor-url">
+              <span>{t('lanMonitor.accessUrl')}</span>
+              <code>{lanMonitorStatus.access_url}</code>
+              <button type="button" onClick={() => void handleCopyLanMonitorUrl()}>
+                {lanMonitorCopied ? t('lanMonitor.copied') : t('lanMonitor.copy')}
+              </button>
+            </div>
+          )}
+          {lanMonitorStatus.access_url && (
+            <div className="bitfun-remote-connect__qr-box">
+              <QRCodeSVG value={lanMonitorStatus.access_url} size={150} level="M" includeMargin />
+            </div>
+          )}
+          <div className="bitfun-remote-connect__lan-monitor-code">
+            <span>{t('lanMonitor.pairingCodeLabel')}</span>
+            <strong>{lanMonitorStatus.pairing_code}</strong>
+          </div>
+          <Badge variant={lanMonitorStatus.is_connected ? 'success' : 'warning'}>
+            {lanMonitorStatus.is_connected
+              ? `${t('lanMonitor.connectedDevice')}: ${lanMonitorStatus.peer_device_name ?? ''}`
+              : t('lanMonitor.waitingDevice')}
+          </Badge>
+          <p className="bitfun-remote-connect__hint">{t('lanMonitor.firewallHint')}</p>
+        </div>
+      )}
+      {renderErrorBlock()}
+      <button
+        type="button"
+        className={`bitfun-remote-connect__btn ${
+          lanMonitorStatus?.is_running
+            ? 'bitfun-remote-connect__btn--disconnect'
+            : 'bitfun-remote-connect__btn--connect'
+        }`}
+        disabled={loading}
+        onClick={() =>
+          void (lanMonitorStatus?.is_running ? handleStopLanMonitor() : handleStartLanMonitor())
+        }
+      >
+        {lanMonitorStatus?.is_running ? t('lanMonitor.stop') : t('lanMonitor.start')}
+      </button>
+    </div>
+  );
+
   // ── Bot group content ────────────────────────────────────────────
 
   const renderBotContent = () => {
@@ -979,6 +1110,16 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
             <span className="bitfun-remote-connect__group-divider" />
             <button
               type="button"
+              className={`bitfun-remote-connect__group-btn${activeGroup === 'monitor' ? ' is-active' : ''}`}
+              onClick={() => { setActiveGroup('monitor'); setConnectionResult(null); setError(null); }}
+              disabled={isNetworkConnecting || isBotConnecting}
+            >
+              {t('lanMonitor.desktopTitle')}
+              {lanMonitorStatus?.is_running && <span className="bitfun-remote-connect__dot" />}
+            </button>
+            <span className="bitfun-remote-connect__group-divider" />
+            <button
+              type="button"
               className={`bitfun-remote-connect__group-btn${activeGroup === 'bot' ? ' is-active' : ''}`}
               onClick={() => { setActiveGroup('bot'); setConnectionResult(null); setError(null); }}
               disabled={isNetworkConnecting}
@@ -1008,7 +1149,7 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
                 </React.Fragment>
               ))}
             </div>
-          ) : (
+          ) : activeGroup === 'bot' ? (
             <div className="bitfun-remote-connect__subtabs">
               {BOT_TABS.map((tab, i) => (
                 <React.Fragment key={tab.id}>
@@ -1027,10 +1168,14 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
                 </React.Fragment>
               ))}
             </div>
-          )}
+          ) : null}
 
           {/* ── Content ── */}
-          {activeGroup === 'network' ? renderNetworkContent() : renderBotContent()}
+          {activeGroup === 'network'
+            ? renderNetworkContent()
+            : activeGroup === 'monitor'
+              ? renderLanMonitorContent()
+              : renderBotContent()}
         </div>
       </Modal>
 

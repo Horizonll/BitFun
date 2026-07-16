@@ -52,7 +52,7 @@ pub use account::{
 };
 pub use device::DeviceIdentity;
 pub use encryption::{decrypt_from_base64, encrypt_to_base64, KeyPair};
-pub use pairing::{PairingProtocol, PairingState};
+pub use pairing::{LanMonitorPairingGuard, PairingProtocol, PairingState};
 pub use qr_generator::QrGenerator;
 pub use relay_client::ensure_rustls_crypto_provider;
 pub use relay_client::RelayClient;
@@ -61,6 +61,7 @@ pub use remote_server::RemoteServer;
 use anyhow::Result;
 use bitfun_services_integrations::remote_connect::upload_mobile_web_to_relay;
 use log::{debug, error, info};
+use remote_server::RemoteResponse;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -70,6 +71,7 @@ use tokio::sync::RwLock;
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionMethod {
     Lan { ip: Option<String> },
+    LanMonitor { ip: Option<String> },
     Ngrok,
     BitfunServer,
     CustomServer { url: String },
@@ -89,6 +91,7 @@ pub struct RemoteConnectConfig {
     pub bot_telegram: Option<bot::BotConfig>,
     pub bot_weixin: Option<bot::BotConfig>,
     pub mobile_web_dir: Option<String>,
+    pub lan_monitor_web_dir: Option<String>,
 }
 
 impl Default for RemoteConnectConfig {
@@ -102,6 +105,7 @@ impl Default for RemoteConnectConfig {
             bot_telegram: None,
             bot_weixin: None,
             mobile_web_dir: None,
+            lan_monitor_web_dir: None,
         }
     }
 }
@@ -158,6 +162,7 @@ pub struct RemoteConnectService {
     bot_connected_info: Arc<RwLock<Option<String>>>,
     /// Trusted mobile identity for the current relay lifecycle only.
     trusted_mobile_identity: Arc<RwLock<Option<TrustedMobileIdentity>>>,
+    lan_monitor_pairing_guard: Arc<RwLock<Option<LanMonitorPairingGuard>>>,
     /// Account-authenticated device-routing relay client (P2). Independent from
     /// the room-pairing relay_client above; connects after account login.
     device_relay_client: Arc<RwLock<Option<RelayClient>>>,
@@ -206,6 +211,7 @@ impl RemoteConnectService {
             weixin_bot: Arc::new(RwLock::new(None)),
             bot_connected_info: Arc::new(RwLock::new(None)),
             trusted_mobile_identity: Arc::new(RwLock::new(None)),
+            lan_monitor_pairing_guard: Arc::new(RwLock::new(None)),
             device_relay_client: Arc::new(RwLock::new(None)),
             online_devices: Arc::new(RwLock::new(Vec::new())),
             delegated_identity_fn: Arc::new(RwLock::new(None)),
@@ -349,10 +355,28 @@ impl RemoteConnectService {
         // Relay methods: clean up previous relay (but leave bots alone)
         self.stop_relay().await;
 
-        let static_dir = self.config.mobile_web_dir.as_deref();
+        let is_lan_monitor = matches!(method, ConnectionMethod::LanMonitor { .. });
+        let monitor_pairing_code = if is_lan_monitor {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let guard = LanMonitorPairingGuard::new(now_ms);
+            let code = guard.pairing_code().to_string();
+            *self.lan_monitor_pairing_guard.write().await = Some(guard);
+            Some(code)
+        } else {
+            *self.lan_monitor_pairing_guard.write().await = None;
+            None
+        };
+        let static_dir = if is_lan_monitor {
+            self.config.lan_monitor_web_dir.as_deref()
+        } else {
+            self.config.mobile_web_dir.as_deref()
+        };
 
         let relay_url = match &method {
-            ConnectionMethod::Lan { ip } => {
+            ConnectionMethod::Lan { ip } | ConnectionMethod::LanMonitor { ip } => {
                 let handle =
                     embedded_relay::start_embedded_relay(self.config.lan_port, static_dir).await?;
                 *self.embedded_relay.write().await = Some(handle);
@@ -400,7 +424,9 @@ impl RemoteConnectService {
         let qr_payload = pairing.initiate(&relay_url).await?;
 
         let ws_url = match &method {
-            ConnectionMethod::Lan { .. } | ConnectionMethod::Ngrok => {
+            ConnectionMethod::Lan { .. }
+            | ConnectionMethod::LanMonitor { .. }
+            | ConnectionMethod::Ngrok => {
                 format!("ws://127.0.0.1:{}/ws", self.config.lan_port)
             }
             _ => {
@@ -425,6 +451,9 @@ impl RemoteConnectService {
 
         let web_app_url: String = match &method {
             ConnectionMethod::Lan { .. } | ConnectionMethod::Ngrok => relay_url.clone(),
+            ConnectionMethod::LanMonitor { .. } => {
+                format!("{}/lan-monitor.html", relay_url.trim_end_matches('/'))
+            }
             ConnectionMethod::BitfunServer => {
                 if let Some(web_dir) = static_dir {
                     match upload_mobile_web_to_relay(&relay_url, &qr_payload.room_id, web_dir).await
@@ -475,7 +504,11 @@ impl RemoteConnectService {
         };
 
         let client_language = crate::service::config::get_app_language_code().await;
-        let qr_url = QrGenerator::build_url(&qr_payload, &web_app_url, &client_language);
+        let qr_url = if is_lan_monitor {
+            QrGenerator::build_lan_monitor_url(&web_app_url)
+        } else {
+            QrGenerator::build_url(&qr_payload, &web_app_url, &client_language)
+        };
         let qr_svg = QrGenerator::generate_svg_from_url(&qr_url)?;
         let qr_data = QrGenerator::generate_png_base64_from_url(&qr_url)?;
 
@@ -486,6 +519,7 @@ impl RemoteConnectService {
         let relay_arc = self.relay_client.clone();
         let server_arc = self.remote_server.clone();
         let trusted_mobile_identity_arc = self.trusted_mobile_identity.clone();
+        let lan_monitor_pairing_guard_arc = self.lan_monitor_pairing_guard.clone();
         let delegated_identity_fn_arc = self.delegated_identity_fn.clone();
         let local_device_id = self.device_identity.device_id.clone();
         tokio::spawn(async move {
@@ -532,7 +566,11 @@ impl RemoteConnectService {
                                 match server.decrypt_command(&encrypted_data, &nonce) {
                                     Ok((cmd, request_id)) => {
                                         handled_as_active_command = true;
-                                        debug!("Remote command: {cmd:?}");
+                                        if is_lan_monitor {
+                                            debug!("LAN monitor command received");
+                                        } else {
+                                            debug!("Remote command: {cmd:?}");
+                                        }
                                         let response = server.dispatch(&cmd).await;
                                         match server
                                             .encrypt_response(&response, request_id.as_deref())
@@ -554,9 +592,31 @@ impl RemoteConnectService {
                                         }
                                     }
                                     Err(e) => {
-                                        debug!(
-                                            "Active session could not decrypt command, falling back to pairing verification: {e}"
-                                        );
+                                        if is_lan_monitor {
+                                            handled_as_active_command = true;
+                                            debug!("LAN monitor command rejected: {e}");
+                                            let response = RemoteResponse::Error {
+                                                message: "LAN monitor command was rejected"
+                                                    .to_string(),
+                                            };
+                                            if let Ok((enc, resp_nonce)) =
+                                                server.encrypt_response(&response, None)
+                                            {
+                                                if let Some(ref client) = *relay_arc.read().await {
+                                                    let _ = client
+                                                        .send_relay_response(
+                                                            &correlation_id,
+                                                            &enc,
+                                                            &resp_nonce,
+                                                        )
+                                                        .await;
+                                                }
+                                            }
+                                        } else {
+                                            debug!(
+                                                "Active session could not decrypt command, falling back to pairing verification: {e}"
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -576,7 +636,59 @@ impl RemoteConnectService {
                                 if let Ok(response) =
                                     serde_json::from_str::<pairing::PairingResponse>(&json)
                                 {
-                                    let submitted_identity =
+                                    let submitted_identity = if is_lan_monitor {
+                                        let install_id = response
+                                            .mobile_install_id
+                                            .as_deref()
+                                            .map(str::trim)
+                                            .filter(|value| !value.is_empty());
+                                        let submitted_code = response
+                                            .user_id
+                                            .as_deref()
+                                            .map(str::trim)
+                                            .filter(|value| !value.is_empty());
+                                        let validation = match (install_id, submitted_code) {
+                                            (Some(install_id), Some(submitted_code)) => {
+                                                let now_ms = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap_or_default()
+                                                    .as_millis()
+                                                    as u64;
+                                                let mut guard =
+                                                    lan_monitor_pairing_guard_arc.write().await;
+                                                match guard.as_mut() {
+                                                    Some(guard) => guard
+                                                        .verify(submitted_code, install_id, now_ms)
+                                                        .map(|_| TrustedMobileIdentity {
+                                                            mobile_install_id: install_id.to_string(),
+                                                            user_id: "lan-monitor".to_string(),
+                                                        }),
+                                                    None => Err(
+                                                        "LAN monitor pairing is not active"
+                                                            .to_string(),
+                                                    ),
+                                                }
+                                            }
+                                            _ => Err(
+                                                "Missing LAN monitor pairing code or browser installation ID"
+                                                    .to_string(),
+                                            ),
+                                        };
+                                        match validation {
+                                            Ok(identity) => identity,
+                                            Err(message) => {
+                                                drop(p);
+                                                RemoteConnectService::send_pairing_error_response(
+                                                    &relay_arc,
+                                                    &correlation_id,
+                                                    &shared_secret,
+                                                    message,
+                                                )
+                                                .await;
+                                                continue;
+                                            }
+                                        }
+                                    } else {
                                         match RemoteConnectService::validate_mobile_identity(
                                             &trusted_mobile_identity_arc,
                                             &response,
@@ -595,7 +707,8 @@ impl RemoteConnectService {
                                                 .await;
                                                 continue;
                                             }
-                                        };
+                                        }
+                                    };
                                     drop(p);
                                     let mut pw = pairing_arc.write().await;
                                     match pw.verify_response(&response).await {
@@ -607,11 +720,17 @@ impl RemoteConnectService {
                                             )
                                             .await;
                                             if let Some(s) = pw.shared_secret() {
-                                                let server = RemoteServer::new(*s);
+                                                let source = if is_lan_monitor {
+                                                    bitfun_services_integrations::remote_connect::RemoteConnectSubmissionSource::LanMonitor
+                                                } else {
+                                                    bitfun_services_integrations::remote_connect::RemoteConnectSubmissionSource::Relay
+                                                };
+                                                let server =
+                                                    RemoteServer::new_with_source(*s, source);
 
                                                 let initial_sync = server
-                                                    .generate_initial_sync(Some(
-                                                        submitted_identity.user_id.clone(),
+                                                    .generate_initial_sync((!is_lan_monitor).then(
+                                                        || submitted_identity.user_id.clone(),
                                                     ))
                                                     .await;
                                                 if let Ok((enc, resp_nonce)) =
@@ -639,8 +758,11 @@ impl RemoteConnectService {
                                                 // is logged into an account, delegate the
                                                 // account identity to the paired client
                                                 // (token + master_key via room channel).
-                                                let delegate_fn =
-                                                    delegated_identity_fn_arc.read().await.clone();
+                                                let delegate_fn = if is_lan_monitor {
+                                                    None
+                                                } else {
+                                                    delegated_identity_fn_arc.read().await.clone()
+                                                };
                                                 if let Some(get_identity) = delegate_fn {
                                                     if let Some((token, master_key, _relay_url)) =
                                                         get_identity().await
@@ -734,7 +856,7 @@ impl RemoteConnectService {
             qr_data: Some(qr_data),
             qr_svg: Some(qr_svg),
             qr_url: Some(qr_url),
-            bot_pairing_code: None,
+            bot_pairing_code: monitor_pairing_code,
             bot_link: None,
             pairing_state: state,
         })
@@ -1077,6 +1199,7 @@ impl RemoteConnectService {
 
         self.pairing.write().await.reset().await;
         *self.trusted_mobile_identity.write().await = None;
+        *self.lan_monitor_pairing_guard.write().await = None;
         info!("Relay connections stopped (bots unaffected)");
     }
 

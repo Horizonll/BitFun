@@ -30,6 +30,10 @@ impl QrGenerator {
         )
     }
 
+    pub fn build_lan_monitor_url(web_app_url: &str) -> String {
+        web_app_url.trim_end_matches('/').to_string()
+    }
+
     /// Generate a QR code as a base64-encoded PNG from a pre-built URL.
     pub fn generate_png_base64_from_url(url: &str) -> Result<String> {
         let code =
@@ -78,5 +82,12 @@ mod tests {
 
         let url = QrGenerator::build_url(&payload, "https://mobile.example.com", "en-US");
         assert!(url.contains("lang=en-US"));
+    }
+
+    #[test]
+    fn lan_monitor_url_omits_pairing_payload() {
+        let url = QrGenerator::build_lan_monitor_url("http://192.168.1.8:9700/lan-monitor.html/");
+        assert_eq!(url, "http://192.168.1.8:9700/lan-monitor.html");
+        assert!(!url.contains("#/pair"));
     }
 }

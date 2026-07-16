@@ -2131,7 +2131,7 @@ function shouldSkipLocaleFormatSourceScan(file) {
   return (
     // Surface i18n owners are the only approved locations for direct Intl usage;
     // product code must call their exported formatting helpers instead.
-    normalized === 'src/web-ui/src/infrastructure/i18n/core/I18nService.ts' ||
+    normalized === 'src/web-ui/src/infrastructure/i18n/core/localeFormatting.ts' ||
     normalized === 'src/mobile-web/src/i18n/I18nProvider.tsx' ||
     normalized.endsWith('/generatedLocaleContract.ts') ||
     normalized.endsWith('.test.ts') ||

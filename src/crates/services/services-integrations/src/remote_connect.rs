@@ -48,12 +48,16 @@ pub use mobile_web_upload::upload_mobile_web_to_relay;
 pub use ngrok::{
     cleanup_all_ngrok, detect_running_ngrok, is_ngrok_available, start_ngrok_tunnel, NgrokTunnel,
 };
-pub use pairing::{PairingChallenge, PairingProtocol, PairingResponse, PairingState, QrPayload};
+pub use pairing::{
+    LanMonitorPairingGuard, PairingChallenge, PairingProtocol, PairingResponse, PairingState,
+    QrPayload,
+};
 pub use qr_generator::QrGenerator;
 pub use relay_client::{
     ensure_rustls_crypto_provider, ConnectionState, RelayClient, RelayEvent, RelayMessage,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,6 +69,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 pub enum RemoteConnectSubmissionSource {
     Relay,
     Bot,
+    LanMonitor,
 }
 
 impl RemoteConnectSubmissionSource {
@@ -72,6 +77,7 @@ impl RemoteConnectSubmissionSource {
         match self {
             RemoteConnectSubmissionSource::Relay => AgentSubmissionSource::RemoteRelay,
             RemoteConnectSubmissionSource::Bot => AgentSubmissionSource::Bot,
+            RemoteConnectSubmissionSource::LanMonitor => AgentSubmissionSource::RemoteRelay,
         }
     }
 
@@ -79,6 +85,7 @@ impl RemoteConnectSubmissionSource {
         match self {
             RemoteConnectSubmissionSource::Relay => "remote_relay",
             RemoteConnectSubmissionSource::Bot => "bot",
+            RemoteConnectSubmissionSource::LanMonitor => "lan_monitor",
         }
     }
 }
@@ -968,6 +975,9 @@ pub fn remote_session_info(
         message_count: metadata.turn_count,
         workspace_path: workspace_path.map(ToOwned::to_owned),
         workspace_name: workspace_name.map(ToOwned::to_owned),
+        state: None,
+        active_turn_id: None,
+        queue_depth: None,
     }
 }
 
@@ -1723,6 +1733,531 @@ pub struct SessionInfo {
     pub workspace_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_depth: Option<usize>,
+}
+
+pub const LAN_MONITOR_DEFAULT_TURN_LIMIT: usize = 50;
+pub const LAN_MONITOR_MAX_TURN_LIMIT: usize = 100;
+pub const LAN_MONITOR_RESULT_STRING_CHAR_LIMIT: usize = 16 * 1024;
+pub const LAN_MONITOR_RESULT_TOTAL_CHAR_BUDGET: usize = 512 * 1024;
+pub const LAN_MONITOR_RESULT_CHUNK_CHAR_LIMIT: usize = 64 * 1024;
+pub const LAN_MONITOR_COMMAND_MAX_AGE_MS: u64 = 5 * 60 * 1000;
+pub const LAN_MONITOR_COMMAND_FUTURE_SKEW_MS: u64 = 30 * 1000;
+const LAN_MONITOR_MAX_TRACKED_COMMANDS: usize = 2_048;
+
+const LAN_MONITOR_TRUNCATED_MARKER: &str = "\n... Output truncated for LAN monitor preview";
+const LAN_MONITOR_OMITTED_MARKER: &str = "Output omitted from LAN monitor preview";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanMonitorTranscriptPage {
+    pub session_id: String,
+    pub turns: Vec<LanMonitorTurn>,
+    pub total_turn_count: usize,
+    pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_before_turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanMonitorTurn {
+    pub turn_id: String,
+    pub turn_index: usize,
+    pub kind: String,
+    pub status: String,
+    pub timestamp: u64,
+    pub start_time: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+    pub user_message: LanMonitorUserMessage,
+    pub rounds: Vec<LanMonitorRound>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanMonitorUserMessage {
+    pub id: String,
+    pub content: String,
+    pub timestamp: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ChatImageAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanMonitorRound {
+    pub id: String,
+    pub round_index: usize,
+    pub status: String,
+    pub start_time: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_alias: Option<String>,
+    pub items: Vec<LanMonitorItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum LanMonitorItem {
+    Text {
+        id: String,
+        content: String,
+        is_markdown: bool,
+        timestamp: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        order_index: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subagent_session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_task_tool_id: Option<String>,
+    },
+    Thinking {
+        id: String,
+        content: String,
+        is_collapsed: bool,
+        timestamp: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        order_index: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subagent_session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_task_tool_id: Option<String>,
+    },
+    Tool {
+        id: String,
+        name: String,
+        status: String,
+        input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        success: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        start_time: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_time: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        order_index: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subagent_session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subagent_dialog_turn_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_task_tool_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subagent_model_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subagent_model_display_name: Option<String>,
+        #[serde(default)]
+        result_truncated: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result_ref: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanMonitorActiveTurn {
+    pub turn_id: String,
+    pub status: String,
+    pub round_index: usize,
+    pub text: String,
+    pub thinking: String,
+    pub tools: Vec<LanMonitorActiveTool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ChatMessageItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanMonitorActiveTool {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanMonitorPollSnapshot {
+    pub version: u64,
+    pub changed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_turn: Option<LanMonitorActiveTurn>,
+    #[serde(default)]
+    pub transcript_changed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_turn_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanMonitorToolResultChunk {
+    pub result_ref: String,
+    pub cursor: usize,
+    pub chunk: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<usize>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum LanMonitorCommand {
+    GetWorkspaceInfo,
+    ListSessions {
+        limit: Option<usize>,
+        offset: Option<usize>,
+        query: Option<String>,
+    },
+    GetTranscriptPage {
+        session_id: String,
+        limit: Option<usize>,
+        before_turn_id: Option<String>,
+    },
+    GetToolResultChunk {
+        session_id: String,
+        turn_id: String,
+        tool_id: String,
+        result_ref: String,
+        cursor: usize,
+        limit: Option<usize>,
+    },
+    PollSession {
+        session_id: String,
+        since_version: u64,
+        known_turn_count: usize,
+    },
+    CancelTask {
+        session_id: String,
+        turn_id: Option<String>,
+    },
+    ConfirmTool {
+        session_id: String,
+        tool_id: String,
+    },
+    RejectTool {
+        session_id: String,
+        tool_id: String,
+        reason: Option<String>,
+    },
+    Ping,
+}
+
+#[derive(Debug, Default)]
+pub struct LanMonitorMessageGuard {
+    seen_nonces: HashMap<String, u64>,
+    seen_request_ids: HashMap<String, u64>,
+}
+
+impl LanMonitorMessageGuard {
+    pub fn validate_envelope(
+        &mut self,
+        value: &serde_json::Value,
+        nonce: &str,
+        now_ms: u64,
+    ) -> Result<String, String> {
+        let version = value
+            .get("_protocol_version")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "Missing LAN monitor protocol version".to_string())?;
+        if version != 1 {
+            return Err("Unsupported LAN monitor protocol version".to_string());
+        }
+
+        let issued_at_ms = value
+            .get("_issued_at_ms")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "Missing LAN monitor command timestamp".to_string())?;
+        if issued_at_ms > now_ms.saturating_add(LAN_MONITOR_COMMAND_FUTURE_SKEW_MS)
+            || now_ms.saturating_sub(issued_at_ms) > LAN_MONITOR_COMMAND_MAX_AGE_MS
+        {
+            return Err("Expired LAN monitor command".to_string());
+        }
+
+        let request_id = value
+            .get("_request_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|request_id| {
+                (8..=128).contains(&request_id.len())
+                    && request_id.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                    })
+            })
+            .ok_or_else(|| "Invalid LAN monitor request ID".to_string())?;
+        if nonce.is_empty() || nonce.len() > 128 {
+            return Err("Invalid LAN monitor nonce".to_string());
+        }
+
+        let cutoff = now_ms.saturating_sub(
+            LAN_MONITOR_COMMAND_MAX_AGE_MS.saturating_add(LAN_MONITOR_COMMAND_FUTURE_SKEW_MS),
+        );
+        self.seen_nonces.retain(|_, seen_at| *seen_at >= cutoff);
+        self.seen_request_ids
+            .retain(|_, seen_at| *seen_at >= cutoff);
+
+        if self.seen_nonces.contains_key(nonce) || self.seen_request_ids.contains_key(request_id) {
+            return Err("Replayed LAN monitor command".to_string());
+        }
+        if self.seen_nonces.len() >= LAN_MONITOR_MAX_TRACKED_COMMANDS
+            || self.seen_request_ids.len() >= LAN_MONITOR_MAX_TRACKED_COMMANDS
+        {
+            return Err("Too many pending LAN monitor commands".to_string());
+        }
+
+        self.seen_nonces.insert(nonce.to_string(), now_ms);
+        self.seen_request_ids.insert(request_id.to_string(), now_ms);
+        Ok(request_id.to_string())
+    }
+}
+
+pub fn lan_monitor_result_ref(session_id: &str, turn_id: &str, tool_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(session_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(turn_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(tool_id.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn sensitive_monitor_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .map(|character| match character {
+            '-' | ' ' | '.' => '_',
+            other => other.to_ascii_lowercase(),
+        })
+        .collect::<String>();
+    matches!(
+        normalized.as_str(),
+        "api_key"
+            | "apikey"
+            | "authorization"
+            | "cookie"
+            | "set_cookie"
+            | "password"
+            | "passwd"
+            | "secret"
+            | "client_secret"
+            | "access_token"
+            | "refresh_token"
+            | "id_token"
+            | "private_key"
+            | "credential"
+            | "credentials"
+    ) || normalized.ends_with("_password")
+        || normalized.ends_with("_secret")
+        || normalized.ends_with("_token")
+        || normalized.ends_with("_credential")
+}
+
+fn redact_monitor_marker(value: &mut String, marker: &str) {
+    let mut search_from = 0usize;
+    loop {
+        let lowercase = value.to_ascii_lowercase();
+        let Some(relative_start) = lowercase[search_from..].find(&marker.to_ascii_lowercase())
+        else {
+            break;
+        };
+        let value_start = search_from + relative_start + marker.len();
+        let suffix = &value[value_start..];
+        let whitespace = suffix.len() - suffix.trim_start().len();
+        let secret_start = value_start + whitespace;
+        let secret_end = value[secret_start..]
+            .find(|character: char| {
+                character.is_whitespace()
+                    || character == '&'
+                    || character == ','
+                    || character == '\''
+                    || character == '"'
+            })
+            .map(|offset| secret_start + offset)
+            .unwrap_or(value.len());
+        if secret_end <= secret_start {
+            search_from = value_start;
+            continue;
+        }
+        value.replace_range(secret_start..secret_end, "[redacted]");
+        search_from = secret_start + "[redacted]".len();
+    }
+}
+
+pub fn sanitize_lan_monitor_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(key, child)| {
+                    if sensitive_monitor_key(key) {
+                        (
+                            key.clone(),
+                            serde_json::Value::String("[redacted]".to_string()),
+                        )
+                    } else {
+                        (key.clone(), sanitize_lan_monitor_value(child))
+                    }
+                })
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(sanitize_lan_monitor_value).collect())
+        }
+        serde_json::Value::String(text) => {
+            let mut redacted = text.clone();
+            for marker in [
+                "Bearer ",
+                "--api-key=",
+                "--api-key ",
+                "--token=",
+                "--token ",
+                "--password=",
+                "--password ",
+                "api_key=",
+                "access_token=",
+                "refresh_token=",
+                "password=",
+            ] {
+                redact_monitor_marker(&mut redacted, marker);
+            }
+            serde_json::Value::String(redacted)
+        }
+        other => other.clone(),
+    }
+}
+
+fn truncate_lan_monitor_string(text: &str, remaining_budget: &mut usize) -> Option<String> {
+    let character_count = text.chars().count();
+    let available = (*remaining_budget).min(LAN_MONITOR_RESULT_STRING_CHAR_LIMIT);
+    if character_count <= available {
+        *remaining_budget = remaining_budget.saturating_sub(character_count);
+        return None;
+    }
+    let marker_count = LAN_MONITOR_TRUNCATED_MARKER.chars().count();
+    if available <= marker_count {
+        *remaining_budget = remaining_budget.saturating_sub(
+            LAN_MONITOR_OMITTED_MARKER
+                .chars()
+                .count()
+                .min(*remaining_budget),
+        );
+        return Some(LAN_MONITOR_OMITTED_MARKER.to_string());
+    }
+    let mut preview = text
+        .chars()
+        .take(available - marker_count)
+        .collect::<String>();
+    preview.push_str(LAN_MONITOR_TRUNCATED_MARKER);
+    *remaining_budget = remaining_budget.saturating_sub(preview.chars().count());
+    Some(preview)
+}
+
+fn compact_lan_monitor_value(value: &mut serde_json::Value, remaining_budget: &mut usize) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            if let Some(preview) = truncate_lan_monitor_string(text, remaining_budget) {
+                *text = preview;
+                true
+            } else {
+                false
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().fold(false, |truncated, item| {
+            compact_lan_monitor_value(item, remaining_budget) || truncated
+        }),
+        serde_json::Value::Object(map) => map.values_mut().fold(false, |truncated, item| {
+            compact_lan_monitor_value(item, remaining_budget) || truncated
+        }),
+        _ => false,
+    }
+}
+
+pub fn compact_lan_monitor_transcript_page(page: &mut LanMonitorTranscriptPage) {
+    let mut remaining_budget = LAN_MONITOR_RESULT_TOTAL_CHAR_BUDGET;
+    for turn in &mut page.turns {
+        for round in &mut turn.rounds {
+            for item in &mut round.items {
+                let LanMonitorItem::Tool {
+                    id,
+                    result,
+                    result_truncated,
+                    result_ref,
+                    ..
+                } = item
+                else {
+                    continue;
+                };
+                let Some(result) = result.as_mut() else {
+                    continue;
+                };
+                if compact_lan_monitor_value(result, &mut remaining_budget) {
+                    *result_truncated = true;
+                    *result_ref = Some(lan_monitor_result_ref(&page.session_id, &turn.turn_id, id));
+                }
+            }
+        }
+    }
+}
+
+pub fn lan_monitor_tool_result_chunk(
+    result_ref: String,
+    value: &serde_json::Value,
+    cursor: usize,
+    requested_limit: Option<usize>,
+) -> Result<LanMonitorToolResultChunk, String> {
+    let serialized = serde_json::to_string_pretty(&sanitize_lan_monitor_value(value))
+        .map_err(|error| format!("Failed to serialize tool result: {error}"))?;
+    let characters = serialized.chars().collect::<Vec<_>>();
+    if cursor > characters.len() {
+        return Err("Invalid tool result cursor".to_string());
+    }
+    let limit = requested_limit
+        .unwrap_or(LAN_MONITOR_RESULT_CHUNK_CHAR_LIMIT)
+        .clamp(1, LAN_MONITOR_RESULT_CHUNK_CHAR_LIMIT);
+    let end = cursor.saturating_add(limit).min(characters.len());
+    let chunk = characters[cursor..end].iter().collect::<String>();
+    Ok(LanMonitorToolResultChunk {
+        result_ref,
+        cursor,
+        chunk,
+        next_cursor: (end < characters.len()).then_some(end),
+        has_more: end < characters.len(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1919,6 +2454,7 @@ pub fn build_remote_chat_messages(turns: Vec<RemoteChatHistoryTurn>) -> Vec<Chat
                     } else {
                         None
                     },
+                    monitor_input: Some(item.call.input.clone()),
                 };
                 tools_flat.push(tool_status.clone());
                 ordered.push(OrderedEntry {
@@ -2016,12 +2552,17 @@ pub struct RemoteToolStatus {
     pub input_preview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_input: Option<serde_json::Value>,
+    #[serde(skip)]
+    pub monitor_input: Option<serde_json::Value>,
 }
 
 /// Commands that remote clients can send to the desktop runtime.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum RemoteCommand {
+    LanMonitor {
+        request: LanMonitorCommand,
+    },
     GetWorkspaceInfo,
     ListRecentWorkspaces,
     SetWorkspace {
@@ -2167,6 +2708,26 @@ pub enum RemoteCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "resp", rename_all = "snake_case")]
 pub enum RemoteResponse {
+    LanMonitorWorkspace {
+        workspace: Option<RemoteWorkspaceFacts>,
+    },
+    LanMonitorSessions {
+        sessions: Vec<SessionInfo>,
+        has_more: bool,
+    },
+    LanMonitorTranscript {
+        page: LanMonitorTranscriptPage,
+    },
+    LanMonitorToolResult {
+        result: LanMonitorToolResultChunk,
+    },
+    LanMonitorPoll {
+        snapshot: LanMonitorPollSnapshot,
+    },
+    LanMonitorActionAccepted {
+        action: String,
+        target_id: String,
+    },
     WorkspaceInfo {
         has_workspace: bool,
         path: Option<String>,
@@ -2323,6 +2884,169 @@ pub enum RemoteResponse {
     },
 }
 
+#[async_trait::async_trait]
+pub trait LanMonitorRuntimeHost: Send + Sync {
+    async fn workspace_info(&self) -> Result<Option<RemoteWorkspaceFacts>, String>;
+    async fn list_sessions(
+        &self,
+        limit: usize,
+        offset: usize,
+        query: Option<&str>,
+    ) -> Result<(Vec<SessionInfo>, bool), String>;
+    async fn transcript_page(
+        &self,
+        session_id: &str,
+        limit: usize,
+        before_turn_id: Option<&str>,
+    ) -> Result<LanMonitorTranscriptPage, String>;
+    async fn tool_result_chunk(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        tool_id: &str,
+        result_ref: &str,
+        cursor: usize,
+        limit: Option<usize>,
+    ) -> Result<LanMonitorToolResultChunk, String>;
+    async fn poll_session(
+        &self,
+        session_id: &str,
+        since_version: u64,
+        known_turn_count: usize,
+    ) -> Result<LanMonitorPollSnapshot, String>;
+    async fn cancel_task(&self, session_id: &str, turn_id: Option<&str>) -> Result<(), String>;
+    async fn confirm_tool(&self, session_id: &str, tool_id: &str) -> Result<(), String>;
+    async fn reject_tool(
+        &self,
+        session_id: &str,
+        tool_id: &str,
+        reason: String,
+    ) -> Result<(), String>;
+}
+
+fn normalize_lan_monitor_rejection_reason(reason: Option<&str>) -> String {
+    let normalized = reason
+        .unwrap_or("Rejected from LAN monitor")
+        .chars()
+        .filter(|character| !character.is_control() || *character == ' ')
+        .take(240)
+        .collect::<String>();
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        "Rejected from LAN monitor".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub async fn handle_lan_monitor_command<H>(host: &H, command: &LanMonitorCommand) -> RemoteResponse
+where
+    H: LanMonitorRuntimeHost + ?Sized,
+{
+    match command {
+        LanMonitorCommand::GetWorkspaceInfo => match host.workspace_info().await {
+            Ok(workspace) => RemoteResponse::LanMonitorWorkspace { workspace },
+            Err(message) => RemoteResponse::Error { message },
+        },
+        LanMonitorCommand::ListSessions {
+            limit,
+            offset,
+            query,
+        } => {
+            let limit = limit.unwrap_or(30).clamp(1, LAN_MONITOR_MAX_TURN_LIMIT);
+            match host
+                .list_sessions(limit, offset.unwrap_or(0), query.as_deref())
+                .await
+            {
+                Ok((sessions, has_more)) => {
+                    RemoteResponse::LanMonitorSessions { sessions, has_more }
+                }
+                Err(message) => RemoteResponse::Error { message },
+            }
+        }
+        LanMonitorCommand::GetTranscriptPage {
+            session_id,
+            limit,
+            before_turn_id,
+        } => {
+            let limit = limit
+                .unwrap_or(LAN_MONITOR_DEFAULT_TURN_LIMIT)
+                .clamp(1, LAN_MONITOR_MAX_TURN_LIMIT);
+            match host
+                .transcript_page(session_id, limit, before_turn_id.as_deref())
+                .await
+            {
+                Ok(page) => RemoteResponse::LanMonitorTranscript { page },
+                Err(message) => RemoteResponse::Error { message },
+            }
+        }
+        LanMonitorCommand::GetToolResultChunk {
+            session_id,
+            turn_id,
+            tool_id,
+            result_ref,
+            cursor,
+            limit,
+        } => match host
+            .tool_result_chunk(session_id, turn_id, tool_id, result_ref, *cursor, *limit)
+            .await
+        {
+            Ok(result) => RemoteResponse::LanMonitorToolResult { result },
+            Err(message) => RemoteResponse::Error { message },
+        },
+        LanMonitorCommand::PollSession {
+            session_id,
+            since_version,
+            known_turn_count,
+        } => match host
+            .poll_session(session_id, *since_version, *known_turn_count)
+            .await
+        {
+            Ok(snapshot) => RemoteResponse::LanMonitorPoll { snapshot },
+            Err(message) => RemoteResponse::Error { message },
+        },
+        LanMonitorCommand::CancelTask {
+            session_id,
+            turn_id,
+        } => match host.cancel_task(session_id, turn_id.as_deref()).await {
+            Ok(()) => RemoteResponse::LanMonitorActionAccepted {
+                action: "cancel_task".to_string(),
+                target_id: session_id.clone(),
+            },
+            Err(message) => RemoteResponse::Error { message },
+        },
+        LanMonitorCommand::ConfirmTool {
+            session_id,
+            tool_id,
+        } => match host.confirm_tool(session_id, tool_id).await {
+            Ok(()) => RemoteResponse::LanMonitorActionAccepted {
+                action: "confirm_tool".to_string(),
+                target_id: tool_id.clone(),
+            },
+            Err(message) => RemoteResponse::Error { message },
+        },
+        LanMonitorCommand::RejectTool {
+            session_id,
+            tool_id,
+            reason,
+        } => match host
+            .reject_tool(
+                session_id,
+                tool_id,
+                normalize_lan_monitor_rejection_reason(reason.as_deref()),
+            )
+            .await
+        {
+            Ok(()) => RemoteResponse::LanMonitorActionAccepted {
+                action: "reject_tool".to_string(),
+                target_id: tool_id.clone(),
+            },
+            Err(message) => RemoteResponse::Error { message },
+        },
+        LanMonitorCommand::Ping => RemoteResponse::Pong,
+    }
+}
+
 /// Host callbacks required by full remote-connect command routing.
 ///
 /// This owner crate decides how wire commands are grouped and translated into
@@ -2336,6 +3060,12 @@ pub trait RemoteCommandRuntimeHost: Send + Sync {
     async fn handle_poll_command(&self, command: &RemoteCommand) -> RemoteResponse;
     async fn handle_workspace_file_command(&self, command: &RemoteCommand) -> RemoteResponse;
     async fn handle_interaction_command(&self, command: &RemoteCommand) -> RemoteResponse;
+
+    async fn handle_lan_monitor_command(&self, _command: &LanMonitorCommand) -> RemoteResponse {
+        RemoteResponse::Error {
+            message: "LAN monitor is not supported on this device".to_string(),
+        }
+    }
 
     /// Handle a device-to-device command arriving from a peer in the same
     /// account.  Default implementation returns an error so existing
@@ -2367,7 +3097,19 @@ pub async fn handle_remote_command<H>(
 where
     H: RemoteCommandRuntimeHost + ?Sized,
 {
+    if source == RemoteConnectSubmissionSource::LanMonitor {
+        return match command {
+            RemoteCommand::LanMonitor { request } => host.handle_lan_monitor_command(request).await,
+            _ => RemoteResponse::Error {
+                message: "Command is not allowed in LAN monitor mode".to_string(),
+            },
+        };
+    }
+
     match command {
+        RemoteCommand::LanMonitor { .. } => RemoteResponse::Error {
+            message: "LAN monitor commands require a LAN monitor connection".to_string(),
+        },
         RemoteCommand::Ping => RemoteResponse::Pong,
 
         RemoteCommand::GetWorkspaceInfo
@@ -2672,6 +3414,7 @@ impl RemoteSessionStateTracker {
         status: &str,
         input_preview: Option<String>,
         tool_input: Option<serde_json::Value>,
+        monitor_input: Option<serde_json::Value>,
         is_subagent: bool,
     ) {
         let resolved_id = if tool_id.is_empty() {
@@ -2694,6 +3437,9 @@ impl RemoteSessionStateTracker {
             if tool_input.is_some() {
                 tool.tool_input = tool_input.clone();
             }
+            if monitor_input.is_some() {
+                tool.monitor_input = monitor_input.clone();
+            }
         } else {
             let tool_status = RemoteToolStatus {
                 id: resolved_id.clone(),
@@ -2708,6 +3454,7 @@ impl RemoteSessionStateTracker {
                 ),
                 input_preview,
                 tool_input,
+                monitor_input,
             };
             state.active_tools.push(tool_status.clone());
             state.active_items.push(ChatMessageItem {
@@ -2732,6 +3479,9 @@ impl RemoteSessionStateTracker {
                 }
                 if tool_input.is_some() {
                     tool.tool_input = tool_input;
+                }
+                if monitor_input.is_some() {
+                    tool.monitor_input = monitor_input;
                 }
             }
         }
@@ -2868,6 +3618,7 @@ impl RemoteSessionStateTracker {
                                 "preparing",
                                 None,
                                 None,
+                                None,
                                 is_subagent,
                             );
                         }
@@ -2880,6 +3631,7 @@ impl RemoteSessionStateTracker {
                                 &tool_name,
                                 "pending_confirmation",
                                 input_preview,
+                                params.clone(),
                                 params,
                                 is_subagent,
                             );
@@ -2902,6 +3654,7 @@ impl RemoteSessionStateTracker {
                                 "running",
                                 input_preview,
                                 tool_input,
+                                params.clone(),
                                 is_subagent,
                             );
                             let _ = self.event_tx.send(TrackerEvent::ToolStarted {
@@ -2918,6 +3671,7 @@ impl RemoteSessionStateTracker {
                                 "confirmed",
                                 None,
                                 None,
+                                None,
                                 is_subagent,
                             );
                         }
@@ -2927,6 +3681,7 @@ impl RemoteSessionStateTracker {
                                 &tool_id,
                                 &tool_name,
                                 "rejected",
+                                None,
                                 None,
                                 None,
                                 is_subagent,
@@ -2962,6 +3717,7 @@ impl RemoteSessionStateTracker {
                                 duration_ms: duration,
                                 success: true,
                             });
+                            state.persistence_dirty = true;
                         }
                         "Failed" => {
                             if let Some(tool) = state.active_tools.iter_mut().rev().find(|tool| {
@@ -2989,6 +3745,7 @@ impl RemoteSessionStateTracker {
                                 duration_ms: None,
                                 success: false,
                             });
+                            state.persistence_dirty = true;
                         }
                         "Cancelled" => {
                             if let Some(tool) = state.active_tools.iter_mut().rev().find(|tool| {
@@ -3699,6 +4456,163 @@ mod tests {
         assert_eq!(
             host.rejected.lock().unwrap().as_slice(),
             [("tool-1".to_string(), "User rejected".to_string())]
+        );
+    }
+
+    fn lan_monitor_envelope(now_ms: u64, request_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "cmd": "lan_monitor",
+            "request": { "action": "ping" },
+            "_protocol_version": 1,
+            "_issued_at_ms": now_ms,
+            "_request_id": request_id,
+        })
+    }
+
+    #[test]
+    fn lan_monitor_message_guard_rejects_replay_and_expired_envelopes() {
+        let now_ms = 10_000_000;
+        let mut guard = LanMonitorMessageGuard::default();
+        let first = lan_monitor_envelope(now_ms, "request-0001");
+
+        assert_eq!(
+            guard.validate_envelope(&first, "nonce-0001", now_ms),
+            Ok("request-0001".to_string())
+        );
+        assert_eq!(
+            guard.validate_envelope(&first, "nonce-0001", now_ms),
+            Err("Replayed LAN monitor command".to_string())
+        );
+        assert_eq!(
+            guard.validate_envelope(&first, "nonce-0002", now_ms),
+            Err("Replayed LAN monitor command".to_string())
+        );
+
+        let expired =
+            lan_monitor_envelope(now_ms - LAN_MONITOR_COMMAND_MAX_AGE_MS - 1, "request-0002");
+        assert_eq!(
+            guard.validate_envelope(&expired, "nonce-0003", now_ms),
+            Err("Expired LAN monitor command".to_string())
+        );
+
+        let future = lan_monitor_envelope(
+            now_ms + LAN_MONITOR_COMMAND_FUTURE_SKEW_MS + 1,
+            "request-0003",
+        );
+        assert_eq!(
+            guard.validate_envelope(&future, "nonce-0004", now_ms),
+            Err("Expired LAN monitor command".to_string())
+        );
+    }
+
+    #[test]
+    fn lan_monitor_redaction_and_result_chunks_exclude_credentials() {
+        let value = serde_json::json!({
+            "authorization": "secret header",
+            "nested": {
+                "password": "plain-password",
+                "output": "curl -H 'Authorization: Bearer abcdef' --token=token-value"
+            }
+        });
+        let sanitized = sanitize_lan_monitor_value(&value);
+        let serialized = serde_json::to_string(&sanitized).unwrap();
+        assert_eq!(sanitized["authorization"], "[redacted]");
+        assert_eq!(sanitized["nested"]["password"], "[redacted]");
+        assert!(!serialized.contains("abcdef"));
+        assert!(!serialized.contains("token-value"));
+
+        let chunk =
+            lan_monitor_tool_result_chunk("result-ref".to_string(), &value, 0, Some(24)).unwrap();
+        assert_eq!(chunk.chunk.chars().count(), 24);
+        assert!(chunk.has_more);
+        assert_eq!(chunk.next_cursor, Some(24));
+        assert!(
+            lan_monitor_tool_result_chunk("result-ref".to_string(), &value, 100_000, None,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn lan_monitor_transcript_preview_marks_large_results_for_chunking() {
+        let mut page = LanMonitorTranscriptPage {
+            session_id: "session-1".to_string(),
+            turns: vec![LanMonitorTurn {
+                turn_id: "turn-1".to_string(),
+                turn_index: 0,
+                kind: "user_dialog".to_string(),
+                status: "completed".to_string(),
+                timestamp: 1,
+                start_time: 1,
+                end_time: Some(2),
+                duration_ms: Some(1),
+                finish_reason: None,
+                user_message: LanMonitorUserMessage {
+                    id: "user-1".to_string(),
+                    content: "question".to_string(),
+                    timestamp: 1,
+                    images: Vec::new(),
+                },
+                rounds: vec![LanMonitorRound {
+                    id: "round-1".to_string(),
+                    round_index: 0,
+                    status: "completed".to_string(),
+                    start_time: 1,
+                    end_time: Some(2),
+                    duration_ms: Some(1),
+                    model_id: None,
+                    model_alias: None,
+                    items: vec![LanMonitorItem::Tool {
+                        id: "tool-1".to_string(),
+                        name: "Read".to_string(),
+                        status: "completed".to_string(),
+                        input: serde_json::json!({}),
+                        result: Some(serde_json::Value::String(
+                            "x".repeat(LAN_MONITOR_RESULT_STRING_CHAR_LIMIT + 100),
+                        )),
+                        success: Some(true),
+                        error: None,
+                        start_time: 1,
+                        end_time: Some(2),
+                        duration_ms: Some(1),
+                        order_index: Some(0),
+                        subagent_session_id: None,
+                        subagent_dialog_turn_id: None,
+                        parent_task_tool_id: None,
+                        subagent_model_id: None,
+                        subagent_model_display_name: None,
+                        result_truncated: false,
+                        result_ref: None,
+                    }],
+                }],
+            }],
+            total_turn_count: 1,
+            has_more: false,
+            next_before_turn_id: None,
+        };
+
+        compact_lan_monitor_transcript_page(&mut page);
+        let LanMonitorItem::Tool {
+            result,
+            result_truncated,
+            result_ref,
+            ..
+        } = &page.turns[0].rounds[0].items[0]
+        else {
+            panic!("expected tool item");
+        };
+        assert!(*result_truncated);
+        assert_eq!(
+            result_ref.as_deref(),
+            Some(lan_monitor_result_ref("session-1", "turn-1", "tool-1").as_str())
+        );
+        assert!(
+            result
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .unwrap()
+                .chars()
+                .count()
+                <= LAN_MONITOR_RESULT_STRING_CHAR_LIMIT
         );
     }
 }

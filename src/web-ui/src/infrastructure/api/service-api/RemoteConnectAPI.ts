@@ -52,6 +52,17 @@ export interface LanNetworkInfo {
   available_ips: LanNetworkInterface[];
 }
 
+export interface LanMonitorStatus {
+  is_running: boolean;
+  is_connected: boolean;
+  pairing_state: string;
+  access_url: string | null;
+  pairing_code: string | null;
+  peer_device_name: string | null;
+  connected_device_count: number;
+  last_error: string | null;
+}
+
 export interface RemoteConnectFormState {
   custom_server_url: string;
   telegram_bot_token: string;
@@ -180,6 +191,35 @@ class RemoteConnectAPIService {
       await this.adapter.request<void>('remote_connect_stop');
     } catch (e) {
       log.error('stopConnection failed', e);
+      throw e;
+    }
+  }
+
+  async startLanMonitor(lanIp?: string): Promise<LanMonitorStatus> {
+    try {
+      return await this.adapter.request<LanMonitorStatus>('lan_monitor_start', {
+        request: { lan_ip: lanIp ?? null },
+      });
+    } catch (e) {
+      log.error('startLanMonitor failed', e);
+      throw e;
+    }
+  }
+
+  async stopLanMonitor(): Promise<void> {
+    try {
+      await this.adapter.request<void>('lan_monitor_stop');
+    } catch (e) {
+      log.error('stopLanMonitor failed', e);
+      throw e;
+    }
+  }
+
+  async getLanMonitorStatus(): Promise<LanMonitorStatus> {
+    try {
+      return await this.adapter.request<LanMonitorStatus>('lan_monitor_status');
+    } catch (e) {
+      log.error('getLanMonitorStatus failed', e);
       throw e;
     }
   }

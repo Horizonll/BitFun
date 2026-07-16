@@ -1,0 +1,416 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: var(--color-accent-500);
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+}
+
+.lan-monitor-pairing {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  background: radial-gradient(
+    circle at top,
+    color-mix(in srgb, var(--color-accent-500) 12%, transparent),
+    transparent 48%
+  );
+
+  > section {
+    display: flex;
+    width: min(440px, calc(100vw - 48px));
+    box-sizing: border-box;
+    flex-direction: column;
+    gap: 16px;
+    padding: 36px;
+    border: 1px solid var(--color-border-default);
+    border-radius: 16px;
+    background: var(--color-bg-elevated);
+    box-shadow: var(--shadow-lg);
+  }
+
+  img {
+    width: 56px;
+    height: 56px;
+  }
+
+  h1,
+  p {
+    margin: 0;
+  }
+
+  p {
+    color: var(--color-text-secondary);
+  }
+
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    color: var(--color-text-secondary);
+  }
+
+  input {
+    padding: 14px 16px;
+    border: 1px solid var(--color-border-default);
+    border-radius: 10px;
+    outline: none;
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    font-size: 24px;
+    letter-spacing: 0.25em;
+    text-align: center;
+
+    &:focus {
+      border-color: var(--color-accent-500);
+    }
+  }
+
+  button {
+    padding: 12px 16px;
+    background: var(--color-accent-600);
+  }
+}
+
+.lan-monitor {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  grid-template-columns: 290px minmax(0, 1fr);
+}
+
+.lan-monitor__sidebar {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 14px;
+  border-right: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+
+  h2 {
+    margin: 20px 8px 8px;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+}
+
+.lan-monitor__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px;
+
+  img {
+    width: 34px;
+    height: 34px;
+  }
+
+  div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+  }
+
+  span {
+    overflow: hidden;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.lan-monitor__session-list {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+
+  > button {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px;
+    border-color: transparent;
+    background: transparent;
+    text-align: left;
+
+    &.is-active {
+      border-color: color-mix(in srgb, var(--color-accent-500) 38%, transparent);
+      background: color-mix(in srgb, var(--color-accent-500) 12%, transparent);
+    }
+
+    strong,
+    span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    span {
+      color: var(--color-text-muted);
+      font-size: 12px;
+    }
+  }
+}
+
+.lan-monitor__content {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--color-bg-primary);
+}
+
+.lan-monitor__topbar {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, transparent);
+
+  div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+  }
+
+  span {
+    color: var(--color-text-muted);
+    font-size: 12px;
+  }
+}
+
+.lan-monitor__timeline {
+  width: min(100%, 1120px);
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: 28px clamp(20px, 4vw, 64px) 80px;
+  overflow-y: auto;
+}
+
+.lan-monitor__turn {
+  margin-bottom: 30px;
+}
+
+.lan-monitor__user-message {
+  width: min(78%, 760px);
+  box-sizing: border-box;
+  margin-left: auto;
+  padding: 14px 18px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 16px 16px 4px 16px;
+  background: var(--color-bg-tertiary);
+
+  > header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  > img {
+    max-width: min(100%, 560px);
+    max-height: 420px;
+    border-radius: 8px;
+    object-fit: contain;
+  }
+}
+
+.lan-monitor__round {
+  margin-top: 14px;
+}
+
+.lan-monitor__item {
+  margin: 10px 0;
+
+  &--subagent {
+    margin-left: 24px;
+    padding-left: 14px;
+    border-left: 2px solid color-mix(in srgb, var(--color-accent-500) 45%, transparent);
+  }
+}
+
+.lan-monitor__subagent-label {
+  margin-bottom: 4px;
+  color: var(--color-accent-500);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.lan-monitor__assistant-message,
+.lan-monitor__thinking,
+.lan-monitor__tool,
+.lan-monitor__active-turn {
+  max-width: 900px;
+}
+
+.lan-monitor__thinking {
+  padding: 10px 14px;
+  border-left: 2px solid var(--color-border-default);
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 45%, transparent);
+
+  summary {
+    cursor: pointer;
+    color: var(--color-text-muted);
+  }
+}
+
+.lan-monitor__tool {
+  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-bg-scene);
+
+  > header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--color-border-subtle);
+
+    span {
+      color: var(--color-text-muted);
+      font-size: 12px;
+    }
+  }
+
+  details,
+  .lan-monitor__tool-error {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  summary {
+    cursor: pointer;
+    color: var(--color-text-secondary);
+  }
+
+  pre {
+    max-height: 420px;
+    margin: 10px 0 0;
+    overflow: auto;
+    color: var(--color-text-secondary);
+    font-family: var(--font-family-mono);
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  > button,
+  .lan-monitor__tool-actions {
+    margin: 10px 14px;
+  }
+}
+
+.lan-monitor__tool-error {
+  color: var(--color-error);
+}
+
+.lan-monitor__tool-actions {
+  display: flex;
+  gap: 8px;
+
+  button {
+    padding: 7px 12px;
+  }
+}
+
+.lan-monitor__active-turn {
+  margin-top: 22px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--color-accent-500) 42%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-accent-500) 7%, var(--color-bg-secondary));
+
+  > header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+
+    span {
+      color: var(--color-text-muted);
+    }
+
+    button {
+      margin-left: auto;
+      padding: 7px 12px;
+    }
+  }
+}
+
+.lan-monitor__live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-success);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-success) 15%, transparent);
+}
+
+.lan-monitor__error,
+.lan-monitor__reconnecting {
+  padding: 10px 14px;
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+}
+
+.lan-monitor__load-older {
+  display: block;
+  margin: 0 auto 24px;
+  padding: 8px 14px;
+}
+
+.lan-monitor__loading,
+.lan-monitor__empty {
+  padding: 50px;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  .lan-monitor {
+    grid-template-columns: 230px minmax(0, 1fr);
+  }
+
+  .lan-monitor__timeline {
+    padding-inline: 18px;
+  }
+}

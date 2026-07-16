@@ -547,6 +547,19 @@
     "syncPhaseListingSessions": "Scanning local sessions…",
     "syncPhaseExportingSessions": "Backing up sessions {{current}}/{{total}}"
   },
+  "lanMonitor": {
+    "desktopTitle": "VR / LAN Monitor",
+    "desktopDescription": "Serve the desktop conversation monitor to a VR browser on the same network.",
+    "start": "Start LAN monitor",
+    "stop": "Stop LAN monitor",
+    "accessUrl": "Browser URL",
+    "pairingCodeLabel": "Pairing code",
+    "connectedDevice": "Connected device",
+    "waitingDevice": "Waiting for a VR browser",
+    "copy": "Copy",
+    "copied": "Copied",
+    "firewallHint": "If the page cannot open, allow BitFun through the system firewall and confirm both devices use the same network."
+  },
   "remoteConnect": {
     "tabNgrok": "NAT Traversal",
     "tabCustomServer": "Self-Hosted",
