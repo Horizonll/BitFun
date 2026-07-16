@@ -230,12 +230,36 @@ button {
   cursor: pointer;
 }
 
+.lan-monitor__timeline-shell {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+}
+
 .lan-monitor__timeline {
   width: min(100%, 1120px);
+  height: 100%;
   box-sizing: border-box;
   margin: 0 auto;
   padding: 28px clamp(20px, 4vw, 64px) 80px;
   overflow-y: auto;
+}
+
+.lan-monitor__scroll-latest {
+  position: absolute;
+  right: clamp(20px, 4vw, 64px);
+  bottom: 24px;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 50%;
+  color: var(--color-text-primary);
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-lg);
+  font-size: 22px;
+  line-height: 1;
 }
 
 .lan-monitor__turn {

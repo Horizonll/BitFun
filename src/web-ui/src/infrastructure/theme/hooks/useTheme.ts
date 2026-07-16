@@ -4,7 +4,7 @@ import { useEffect, useMemo } from 'react';
 import { useThemeStore } from '../store/themeStore';
 import { themeService } from '../core/ThemeService';
 import { ThemeType, SYSTEM_THEME_ID } from '../types';
-export function useTheme() {
+export function useTheme(options?: { initialize?: boolean }) {
   const {
     currentTheme,
     currentThemeId,
@@ -18,10 +18,10 @@ export function useTheme() {
   
   
   useEffect(() => {
-    if (!currentTheme && !loading) {
+    if (options?.initialize !== false && !currentTheme && !loading) {
       initialize();
     }
-  }, [currentTheme, loading, initialize]);
+  }, [currentTheme, loading, initialize, options?.initialize]);
   
   return {
     

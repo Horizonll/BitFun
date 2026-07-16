@@ -768,6 +768,7 @@ export interface LineRange {
 
 export interface MarkdownProps {
   content: string;
+  initializeTheme?: boolean;
   basePath?: string;
   remoteConnectionId?: string;
   className?: string;
@@ -783,6 +784,7 @@ export interface MarkdownProps {
 
 export const Markdown = React.memo<MarkdownProps>(({ 
   content, 
+  initializeTheme = true,
   basePath,
   remoteConnectionId,
   className = '',
@@ -795,7 +797,7 @@ export const Markdown = React.memo<MarkdownProps>(({
   onReproductionProceed,
   traceContext,
 }) => {
-  const { isLight } = useTheme();
+  const { isLight } = useTheme({ initialize: initializeTheme });
   const [currentWorkspacePath, setCurrentWorkspacePath] = useState('');
   
   const syntaxTheme = useMemo(() => buildMarkdownPrismStyle(isLight), [isLight]);

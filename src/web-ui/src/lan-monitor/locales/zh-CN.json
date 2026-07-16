@@ -18,6 +18,7 @@
   "noSessions": "当前工作区暂无会话",
   "selectSession": "选择会话以查看完整对话",
   "loadOlder": "加载更早回合",
+  "scrollToLatest": "滚动到最新",
   "live": "实时",
   "thinking": "思考",
   "toolInput": "输入",

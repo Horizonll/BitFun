@@ -49,6 +49,10 @@ function ItemShell({ item, children }: { item: MonitorItem; children: React.Reac
   );
 }
 
+function DarkMarkdownRenderer(props: React.ComponentProps<typeof MarkdownRenderer>) {
+  return <MarkdownRenderer {...props} initializeTheme={false} />;
+}
+
 export default function LanMonitorApp() {
   const clientRef = useRef<LanMonitorClient | null>(null);
   const knownTurnCountRef = useRef(0);
@@ -66,6 +70,9 @@ export default function LanMonitorApp() {
   const [activeTurn, setActiveTurn] = useState<ActiveTurn | null>(null);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [expandedResults, setExpandedResults] = useState<Record<string, ExpandedResult>>({});
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+  const followOutputRef = useRef(true);
+  const [isFollowingOutput, setIsFollowingOutput] = useState(true);
 
   const command = useCallback(async (request: Record<string, unknown>) => {
     const client = clientRef.current;
@@ -133,6 +140,37 @@ export default function LanMonitorApp() {
     },
     [command],
   );
+
+  const handleTimelineScroll = useCallback(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    const distanceFromBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
+    const shouldFollow = distanceFromBottom <= 32;
+    followOutputRef.current = shouldFollow;
+    setIsFollowingOutput(current => (current === shouldFollow ? current : shouldFollow));
+  }, []);
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    followOutputRef.current = true;
+    setIsFollowingOutput(true);
+    timeline.scrollTo({ top: timeline.scrollHeight, behavior });
+  }, []);
+
+  useEffect(() => {
+    followOutputRef.current = true;
+    setIsFollowingOutput(true);
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (!followOutputRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const timeline = timelineRef.current;
+      if (timeline) timeline.scrollTo({ top: timeline.scrollHeight, behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTurn, transcript]);
 
   const handlePair = useCallback(async () => {
     if (!/^\d{6}$/.test(pairingCode.trim())) return;
@@ -329,7 +367,7 @@ export default function LanMonitorApp() {
         <ItemShell key={item.id} item={item}>
           <details className="lan-monitor__thinking" open={!item.isCollapsed}>
             <summary>{t('thinking')}</summary>
-            <MarkdownRenderer content={item.content} />
+            <DarkMarkdownRenderer content={item.content} />
           </details>
         </ItemShell>
       );
@@ -338,7 +376,7 @@ export default function LanMonitorApp() {
       <ItemShell key={item.id} item={item}>
         <div className="lan-monitor__assistant-message">
           {item.isMarkdown ? (
-            <MarkdownRenderer content={item.content} />
+            <DarkMarkdownRenderer content={item.content} />
           ) : (
             <pre>{item.content}</pre>
           )}
@@ -370,12 +408,12 @@ export default function LanMonitorApp() {
           return (
             <details key={`thinking-${index}`} className="lan-monitor__thinking">
               <summary>{t('thinking')}</summary>
-              <MarkdownRenderer content={item.content ?? ''} isStreaming />
+              <DarkMarkdownRenderer content={item.content ?? ''} isStreaming />
             </details>
           );
         }
         if (item.type === 'text') {
-          return <MarkdownRenderer key={`text-${index}`} content={item.content ?? ''} isStreaming />;
+          return <DarkMarkdownRenderer key={`text-${index}`} content={item.content ?? ''} isStreaming />;
         }
         const tool = turn.tools.find(candidate => candidate.id === item.tool?.id);
         if (!tool) return null;
@@ -420,10 +458,10 @@ export default function LanMonitorApp() {
           {turn.thinking && (
             <details className="lan-monitor__thinking">
               <summary>{t('thinking')}</summary>
-              <MarkdownRenderer content={turn.thinking} isStreaming />
+              <DarkMarkdownRenderer content={turn.thinking} isStreaming />
             </details>
           )}
-          {turn.text && <MarkdownRenderer content={turn.text} isStreaming />}
+          {turn.text && <DarkMarkdownRenderer content={turn.text} isStreaming />}
         </>
       )}
     </section>
@@ -498,34 +536,50 @@ export default function LanMonitorApp() {
           </div>
         </header>
         {error && <div className="lan-monitor__error">{error}</div>}
-        <div className="lan-monitor__timeline">
-          {transcript?.hasMore && (
-            <button className="lan-monitor__load-older" onClick={() => void loadOlder()}>
-              {t('loadOlder')}
+        <div className="lan-monitor__timeline-shell">
+          <div
+            ref={timelineRef}
+            className="lan-monitor__timeline"
+            onScroll={handleTimelineScroll}
+          >
+            {transcript?.hasMore && (
+              <button className="lan-monitor__load-older" onClick={() => void loadOlder()}>
+                {t('loadOlder')}
+              </button>
+            )}
+            {transcript?.turns.map(turn => (
+              <article key={turn.turnId} className="lan-monitor__turn">
+                <section className="lan-monitor__user-message">
+                  <header>
+                    <span>{formatTimestamp(turn.userMessage.timestamp)}</span>
+                    <span>{turn.status}</span>
+                  </header>
+                  <DarkMarkdownRenderer content={turn.userMessage.content} />
+                  {turn.userMessage.images?.map(image => (
+                    <img key={image.name} src={image.data_url} alt={image.name} />
+                  ))}
+                </section>
+                {turn.rounds.map(round => (
+                  <section key={round.id} className="lan-monitor__round">
+                    {round.items.map(item => renderItem(turn, item))}
+                  </section>
+                ))}
+              </article>
+            ))}
+            {activeTurn && renderActiveTurn(activeTurn)}
+            {loadingTranscript && <div className="lan-monitor__loading">{t('loading')}</div>}
+            {!selectedSessionId && <div className="lan-monitor__empty">{t('selectSession')}</div>}
+          </div>
+          {!isFollowingOutput && (
+            <button
+              className="lan-monitor__scroll-latest"
+              onClick={() => scrollToLatest()}
+              aria-label={t('scrollToLatest')}
+              title={t('scrollToLatest')}
+            >
+              ↓
             </button>
           )}
-          {transcript?.turns.map(turn => (
-            <article key={turn.turnId} className="lan-monitor__turn">
-              <section className="lan-monitor__user-message">
-                <header>
-                  <span>{formatTimestamp(turn.userMessage.timestamp)}</span>
-                  <span>{turn.status}</span>
-                </header>
-                <MarkdownRenderer content={turn.userMessage.content} />
-                {turn.userMessage.images?.map(image => (
-                  <img key={image.name} src={image.data_url} alt={image.name} />
-                ))}
-              </section>
-              {turn.rounds.map(round => (
-                <section key={round.id} className="lan-monitor__round">
-                  {round.items.map(item => renderItem(turn, item))}
-                </section>
-              ))}
-            </article>
-          ))}
-          {activeTurn && renderActiveTurn(activeTurn)}
-          {loadingTranscript && <div className="lan-monitor__loading">{t('loading')}</div>}
-          {!selectedSessionId && <div className="lan-monitor__empty">{t('selectSession')}</div>}
         </div>
       </section>
     </main>

@@ -18,6 +18,7 @@
   "noSessions": "No sessions in the current workspace",
   "selectSession": "Select a session to view its conversation",
   "loadOlder": "Load older turns",
+  "scrollToLatest": "Scroll to latest",
   "live": "Live",
   "thinking": "Thinking",
   "toolInput": "Input",
