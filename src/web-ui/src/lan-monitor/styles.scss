@@ -297,19 +297,6 @@ button {
 
 .lan-monitor__item {
   margin: 10px 0;
-
-  &--subagent {
-    margin-left: 24px;
-    padding-left: 14px;
-    border-left: 2px solid color-mix(in srgb, var(--color-accent-500) 45%, transparent);
-  }
-}
-
-.lan-monitor__subagent-label {
-  margin-bottom: 4px;
-  color: var(--color-accent-500);
-  font-size: 11px;
-  text-transform: uppercase;
 }
 
 .lan-monitor__assistant-message,
@@ -347,6 +334,14 @@ button {
     span {
       color: var(--color-text-muted);
       font-size: 12px;
+    }
+
+    .lan-monitor__tool-summary {
+      min-width: 0;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
   }
 

@@ -39,14 +39,106 @@ function formatValue(value: unknown): string {
   }
 }
 
-function ItemShell({ item, children }: { item: MonitorItem; children: React.ReactNode }) {
-  const isSubagent = Boolean(item.subagentSessionId || item.parentTaskToolId);
-  return (
-    <div className={`lan-monitor__item ${isSubagent ? 'lan-monitor__item--subagent' : ''}`}>
-      {isSubagent && <div className="lan-monitor__subagent-label">{t('subagent')}</div>}
-      {children}
-    </div>
-  );
+const TOOL_SUMMARY_KEYS = [
+  'search_term',
+  'search_query',
+  'query',
+  'q',
+  'url',
+  'description',
+  'prompt',
+  'command',
+  'cmd',
+  'path',
+  'file_path',
+  'filePath',
+  'pattern',
+  'search_pattern',
+  'task',
+];
+
+function compactText(value: string, maxLength = 120): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
+}
+
+function readToolSummaryValue(input: unknown): string {
+  if (typeof input === 'string') return compactText(input);
+  if (typeof input === 'number' || typeof input === 'boolean') return String(input);
+  if (Array.isArray(input)) return `${input.length} items`;
+  if (!input || typeof input !== 'object') return '';
+  const values = input as Record<string, unknown>;
+  for (const key of TOOL_SUMMARY_KEYS) {
+    const value = values[key];
+    if (typeof value === 'string' && value.trim()) return compactText(value);
+  }
+  const firstString = Object.values(values).find(value => typeof value === 'string' && value.trim());
+  return typeof firstString === 'string' ? compactText(firstString) : '';
+}
+
+function toolSummary(
+  name: string,
+  input: unknown,
+  subagentModelDisplayName: string | undefined,
+  translate: typeof t,
+): { label: string; detail: string } {
+  const normalizedName = name.toLowerCase().replace(/[-_\s]/g, '');
+  const inputRecord = input && typeof input === 'object' && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : null;
+  const subagentType = inputRecord
+    ? [inputRecord.subagent_type, inputRecord.subagentType, inputRecord.agent_type, inputRecord.agentType]
+      .find(value => typeof value === 'string' && value.trim()) as string | undefined
+    : undefined;
+  const isSubagentTask = normalizedName === 'task' || normalizedName.includes('subagent');
+  if (isSubagentTask) {
+    return {
+      label: compactText(subagentType || subagentModelDisplayName || translate('toolSummary.subagent'), 48),
+      detail: readToolSummaryValue(input),
+    };
+  }
+  if (normalizedName.includes('websearch') || normalizedName === 'search') {
+    return { label: translate('toolSummary.webSearch'), detail: readToolSummaryValue(input) };
+  }
+  if (normalizedName.includes('webfetch') || normalizedName === 'fetch') {
+    return { label: translate('toolSummary.webFetch'), detail: readToolSummaryValue(input) };
+  }
+  if (normalizedName.includes('exec') || normalizedName.includes('terminal') || normalizedName === 'shell') {
+    return { label: translate('toolSummary.command'), detail: readToolSummaryValue(input) };
+  }
+  return { label: compactText(name, 48), detail: readToolSummaryValue(input) };
+}
+
+function toolStatusLabel(status: string, translate: typeof t): string {
+  const key = status.toLowerCase();
+  const statusKeys: Record<string, string> = {
+    queued: 'toolStatus.queued',
+    pending: 'toolStatus.pending',
+    pending_confirmation: 'toolStatus.pendingConfirmation',
+    preparing: 'toolStatus.preparing',
+    running: 'toolStatus.running',
+    streaming: 'toolStatus.running',
+    completed: 'toolStatus.completed',
+    cancelled: 'toolStatus.cancelled',
+    rejected: 'toolStatus.rejected',
+    failed: 'toolStatus.error',
+    error: 'toolStatus.error',
+  };
+  return translate(statusKeys[key] ?? 'toolStatus.running');
+}
+
+function formatToolDuration(durationMs: number, translate: typeof t): string {
+  if (durationMs < 1000) return translate('duration', { milliseconds: Math.round(durationMs) });
+  const totalSeconds = Math.floor(durationMs / 1000);
+  if (totalSeconds < 60) return translate('durationSeconds', { seconds: totalSeconds });
+  return translate('durationMinutes', {
+    minutes: Math.floor(totalSeconds / 60),
+    seconds: totalSeconds % 60,
+  });
+}
+
+function ItemShell({ children }: { children: React.ReactNode }) {
+  return <div className="lan-monitor__item">{children}</div>;
 }
 
 function DarkMarkdownRenderer(props: React.ComponentProps<typeof MarkdownRenderer>) {
@@ -70,6 +162,7 @@ export default function LanMonitorApp() {
   const [activeTurn, setActiveTurn] = useState<ActiveTurn | null>(null);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [expandedResults, setExpandedResults] = useState<Record<string, ExpandedResult>>({});
+  const [clockMs, setClockMs] = useState(Date.now());
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const followOutputRef = useRef(true);
   const [isFollowingOutput, setIsFollowingOutput] = useState(true);
@@ -171,6 +264,16 @@ export default function LanMonitorApp() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [activeTurn, transcript]);
+
+  useEffect(() => {
+    const tracksElapsedTime = activeTurn?.tools.some(tool =>
+      tool.startMs != null && ['pending', 'preparing', 'running', 'streaming'].includes(tool.status),
+    );
+    if (!tracksElapsedTime) return;
+    setClockMs(Date.now());
+    const timer = window.setInterval(() => setClockMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [activeTurn]);
 
   const handlePair = useCallback(async () => {
     if (!/^\d{6}$/.test(pairingCode.trim())) return;
@@ -322,14 +425,21 @@ export default function LanMonitorApp() {
     const key = `${turn.turnId}:${tool.id}`;
     const expanded = expandedResults[key];
     const resultText = expanded ? expanded.text : formatValue(tool.result);
+    const summary = toolSummary(
+      tool.name,
+      tool.input,
+      tool.subagentModelDisplayName,
+      t,
+    );
     return (
-      <ItemShell key={tool.id} item={tool}>
+      <ItemShell key={tool.id}>
         <section className={`lan-monitor__tool lan-monitor__tool--${tool.status}`}>
           <header>
-            <strong>{tool.name}</strong>
-            <span>{tool.status}</span>
+            <strong>{summary.label}</strong>
+            {summary.detail && <span className="lan-monitor__tool-summary">{summary.detail}</span>}
+            <span>{toolStatusLabel(tool.status, t)}</span>
             {tool.durationMs != null && (
-              <span>{t('duration', { milliseconds: tool.durationMs })}</span>
+              <span>{formatToolDuration(tool.durationMs, t)}</span>
             )}
           </header>
           <details>
@@ -337,24 +447,21 @@ export default function LanMonitorApp() {
             <pre>{formatValue(tool.input)}</pre>
           </details>
           {tool.result !== undefined && (
-            <details open>
+            <details>
               <summary>{t('toolOutput')}</summary>
               <pre>{resultText}</pre>
+              {tool.resultTruncated && tool.resultRef && (expanded?.hasMore ?? true) && (
+                <button disabled={expanded?.loading} onClick={() => void loadToolResult(turn, tool)}>
+                  {t('loadMoreResult')}
+                </button>
+              )}
             </details>
           )}
-          {tool.result === undefined && !tool.error && (
-            <div className="lan-monitor__waiting-result">{t('waitingResult')}</div>
-          )}
           {tool.error && (
-            <div className="lan-monitor__tool-error">
-              <strong>{t('toolError')}</strong>
+            <details className="lan-monitor__tool-error">
+              <summary>{t('toolError')}</summary>
               <pre>{tool.error}</pre>
-            </div>
-          )}
-          {tool.resultTruncated && tool.resultRef && (expanded?.hasMore ?? true) && (
-            <button disabled={expanded?.loading} onClick={() => void loadToolResult(turn, tool)}>
-              {t('loadMoreResult')}
-            </button>
+            </details>
           )}
         </section>
       </ItemShell>
@@ -362,10 +469,11 @@ export default function LanMonitorApp() {
   };
 
   const renderItem = (turn: MonitorTurn, item: MonitorItem) => {
+    if (item.parentTaskToolId || (item.subagentSessionId && item.type !== 'tool')) return null;
     if (item.type === 'tool') return renderTool(turn, item);
     if (item.type === 'thinking') {
       return (
-        <ItemShell key={item.id} item={item}>
+        <ItemShell key={item.id}>
           <details className="lan-monitor__thinking" open={!item.isCollapsed}>
             <summary>{t('thinking')}</summary>
             <DarkMarkdownRenderer content={item.content} />
@@ -374,7 +482,7 @@ export default function LanMonitorApp() {
       );
     }
     return (
-      <ItemShell key={item.id} item={item}>
+      <ItemShell key={item.id}>
         <div className="lan-monitor__assistant-message">
           {item.isMarkdown ? (
             <DarkMarkdownRenderer content={item.content} />
@@ -403,6 +511,7 @@ export default function LanMonitorApp() {
         </button>
       </header>
       {turn.items.map((item, index) => {
+        if (item.is_subagent) return null;
         if (item.type === 'thinking') {
           return (
             <details key={`thinking-${index}`} className="lan-monitor__thinking">
@@ -416,13 +525,20 @@ export default function LanMonitorApp() {
         }
         const tool = turn.tools.find(candidate => candidate.id === item.tool?.id);
         if (!tool) return null;
+        const summary = toolSummary(tool.name, tool.input, undefined, t);
+        const durationMs = tool.durationMs ?? (
+          tool.startMs != null ? Math.max(0, clockMs - tool.startMs) : undefined
+        );
         return (
           <section key={tool.id} className="lan-monitor__tool">
             <header>
-              <strong>{tool.name}</strong>
-              <span>{tool.status}</span>
+              <strong>{summary.label}</strong>
+              {summary.detail && <span className="lan-monitor__tool-summary">{summary.detail}</span>}
+              <span>{toolStatusLabel(tool.status, t)}</span>
+              {durationMs != null && (
+                <span>{formatToolDuration(durationMs, t)}</span>
+              )}
             </header>
-            {tool.input !== undefined && <pre>{formatValue(tool.input)}</pre>}
             {tool.status === 'pending_confirmation' && selectedSessionId && (
               <div className="lan-monitor__tool-actions">
                 <button
