@@ -35,6 +35,16 @@ interface RandomCryptoSource {
   getRandomValues<T extends ArrayBufferView>(array: T): T;
 }
 
+interface PersistedPairing {
+  version: 1;
+  roomId: string;
+  relayUrl: string;
+  desktopPublicKey: string;
+  sharedKey: string;
+}
+
+const PAIRING_STORAGE_KEY = 'bitfun.lan-monitor.pairing';
+
 export function createSecureRandomId(cryptoSource: RandomCryptoSource = crypto): string {
   if (typeof cryptoSource.randomUUID === 'function') return cryptoSource.randomUUID();
   const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
@@ -79,9 +89,88 @@ async function resolveTarget(): Promise<PairingTarget> {
   };
 }
 
+function getPairingStorage(): Storage | null {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function savePairing(target: PairingTarget, sharedKey: Uint8Array): void {
+  getPairingStorage()?.setItem(
+    PAIRING_STORAGE_KEY,
+    JSON.stringify({
+      version: 1,
+      roomId: target.roomId,
+      relayUrl: target.relayUrl,
+      desktopPublicKey: toBase64(target.desktopPublicKey),
+      sharedKey: toBase64(sharedKey),
+    } satisfies PersistedPairing),
+  );
+}
+
+function loadPairing(): PersistedPairing | null {
+  const raw = getPairingStorage()?.getItem(PAIRING_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedPairing>;
+    if (
+      parsed.version !== 1 ||
+      typeof parsed.roomId !== 'string' ||
+      typeof parsed.relayUrl !== 'string' ||
+      typeof parsed.desktopPublicKey !== 'string' ||
+      typeof parsed.sharedKey !== 'string'
+    ) {
+      return null;
+    }
+    const relayUrl = new URL(parsed.relayUrl);
+    if (!['http:', 'https:'].includes(relayUrl.protocol) || parsed.roomId.trim() === '') {
+      return null;
+    }
+    const desktopPublicKey = fromBase64(parsed.desktopPublicKey);
+    const sharedKey = fromBase64(parsed.sharedKey);
+    if (desktopPublicKey.length !== 32 || sharedKey.length !== 32) return null;
+    return parsed as PersistedPairing;
+  } catch {
+    return null;
+  }
+}
+
+export function clearPersistedPairing(): void {
+  getPairingStorage()?.removeItem(PAIRING_STORAGE_KEY);
+}
+
 export class LanMonitorClient {
   private target: PairingTarget | null = null;
   private sharedKey: Uint8Array | null = null;
+
+  get isPaired(): boolean {
+    return this.target !== null && this.sharedKey !== null;
+  }
+
+  static hasPersistedPairing(): boolean {
+    return loadPairing() !== null;
+  }
+
+  static restore(): LanMonitorClient | null {
+    const persisted = loadPairing();
+    if (!persisted) return null;
+    const client = new LanMonitorClient();
+    client.target = {
+      roomId: persisted.roomId,
+      relayUrl: persisted.relayUrl,
+      desktopPublicKey: fromBase64(persisted.desktopPublicKey),
+    };
+    client.sharedKey = fromBase64(persisted.sharedKey);
+    return client;
+  }
+
+  forgetPairing(): void {
+    this.target = null;
+    this.sharedKey = null;
+    clearPersistedPairing();
+  }
 
   async pair(pairingCode: string, installationId: string): Promise<void> {
     this.target = await resolveTarget();
@@ -134,6 +223,7 @@ export class LanMonitorClient {
       decrypt(this.sharedKey, responsePayload.encrypted_data, responsePayload.nonce),
     );
     if (response.resp === 'error') throw new Error(response.message || t('pairingRejected'));
+    savePairing(this.target, this.sharedKey);
   }
 
   async command(request: Record<string, unknown>): Promise<LanMonitorResponse> {

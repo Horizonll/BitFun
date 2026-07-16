@@ -215,6 +215,21 @@ button {
   }
 }
 
+.lan-monitor__topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lan-monitor__disconnect {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  cursor: pointer;
+}
+
 .lan-monitor__timeline {
   width: min(100%, 1120px);
   box-sizing: border-box;

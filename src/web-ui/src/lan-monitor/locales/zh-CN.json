@@ -32,5 +32,6 @@
   "subagent": "子任务",
   "queueDepth": "队列 {{count}}",
   "reconnecting": "连接中断，正在重连…",
+  "disconnect": "断开连接",
   "connectionLost": "桌面监控已停止或配对已失效。"
 }

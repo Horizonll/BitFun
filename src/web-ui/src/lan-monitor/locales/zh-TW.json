@@ -32,5 +32,6 @@
   "subagent": "子任務",
   "queueDepth": "佇列 {{count}}",
   "reconnecting": "連線中斷，正在重新連線…",
+  "disconnect": "中斷連線",
   "connectionLost": "桌面監控已停止或配對已失效。"
 }

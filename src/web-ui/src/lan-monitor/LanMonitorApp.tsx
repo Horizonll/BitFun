@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { MarkdownRenderer } from '@/component-library';
-import { getOrCreateInstallationId, LanMonitorClient } from './client';
+import {
+  clearPersistedPairing,
+  getOrCreateInstallationId,
+  LanMonitorClient,
+} from './client';
 import { formatTimestamp, translate as t } from './i18n';
 import { mergeOlderTranscriptPage, mergeSessionPoll } from './state';
 import type {
@@ -48,7 +52,9 @@ function ItemShell({ item, children }: { item: MonitorItem; children: React.Reac
 export default function LanMonitorApp() {
   const clientRef = useRef<LanMonitorClient | null>(null);
   const knownTurnCountRef = useRef(0);
-  const [screen, setScreen] = useState<Screen>('pairing');
+  const [screen, setScreen] = useState<Screen>(() =>
+    LanMonitorClient.hasPersistedPairing() ? 'monitor' : 'pairing',
+  );
   const [pairingCode, setPairingCode] = useState('');
   const [pairing, setPairing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +85,35 @@ export default function LanMonitorApp() {
     });
   }, [command]);
 
+  const enterMonitor = useCallback(
+    async (client: LanMonitorClient) => {
+      clientRef.current = client;
+      const workspaceResponse = await client.command({ action: 'get_workspace_info' });
+      if (workspaceResponse.resp === 'lan_monitor_workspace') {
+        setWorkspace(workspaceResponse.workspace);
+      }
+      setScreen('monitor');
+      await refreshSessions();
+    },
+    [refreshSessions],
+  );
+
+  const leaveMonitor = useCallback((message: string | null = null) => {
+    clientRef.current?.forgetPairing();
+    clientRef.current = null;
+    clearPersistedPairing();
+    sessionStorage.removeItem('bitfun.lan-monitor.pairing-code');
+    setScreen('pairing');
+    setPairingCode('');
+    setWorkspace(null);
+    setSessions([]);
+    setSelectedSessionId(null);
+    setTranscript(null);
+    setActiveTurn(null);
+    setExpandedResults({});
+    setError(message);
+  }, []);
+
   const loadTranscript = useCallback(
     async (sessionId: string) => {
       setLoadingTranscript(true);
@@ -106,25 +141,25 @@ export default function LanMonitorApp() {
     try {
       const client = new LanMonitorClient();
       await client.pair(pairingCode.trim(), getOrCreateInstallationId());
-      clientRef.current = client;
-      sessionStorage.setItem('bitfun.lan-monitor.pairing-code', pairingCode.trim());
-      const workspaceResponse = await client.command({ action: 'get_workspace_info' });
-      if (workspaceResponse.resp === 'lan_monitor_workspace') {
-        setWorkspace(workspaceResponse.workspace);
-      }
-      setScreen('monitor');
-      await refreshSessions();
+      await enterMonitor(client);
     } catch (pairingError) {
       setError(pairingError instanceof Error ? pairingError.message : String(pairingError));
     } finally {
       setPairing(false);
     }
-  }, [pairingCode, refreshSessions]);
+  }, [enterMonitor, pairingCode]);
 
   useEffect(() => {
-    const savedCode = sessionStorage.getItem('bitfun.lan-monitor.pairing-code');
-    if (savedCode && /^\d{6}$/.test(savedCode)) setPairingCode(savedCode);
-  }, []);
+    const client = LanMonitorClient.restore();
+    if (!client) {
+      setScreen('pairing');
+      return;
+    }
+    setPairing(true);
+    void enterMonitor(client).catch(restoreError => {
+      leaveMonitor(restoreError instanceof Error ? restoreError.message : String(restoreError));
+    }).finally(() => setPairing(false));
+  }, [enterMonitor, leaveMonitor]);
 
   useEffect(() => {
     if (screen !== 'monitor' || !selectedSessionId) {
@@ -169,10 +204,7 @@ export default function LanMonitorApp() {
           if (cancelled) return;
           consecutiveFailures += 1;
           if (consecutiveFailures >= 5) {
-            clientRef.current = null;
-            sessionStorage.removeItem('bitfun.lan-monitor.pairing-code');
-            setScreen('pairing');
-            setError(t('connectionLost'));
+            leaveMonitor(t('connectionLost'));
             return;
           }
           setReconnecting(true);
@@ -184,7 +216,7 @@ export default function LanMonitorApp() {
     return () => {
       cancelled = true;
     };
-  }, [command, loadTranscript, refreshSessions, screen, selectedSessionId]);
+  }, [command, leaveMonitor, loadTranscript, refreshSessions, screen, selectedSessionId]);
 
   const loadOlder = async () => {
     if (!selectedSessionId || !transcript?.nextBeforeTurnId) return;
@@ -458,7 +490,12 @@ export default function LanMonitorApp() {
             <strong>{selectedSession?.name ?? t('selectSession')}</strong>
             <span>{selectedSession?.agent_type}</span>
           </div>
-          {reconnecting && <span className="lan-monitor__reconnecting">{t('reconnecting')}</span>}
+          <div className="lan-monitor__topbar-actions">
+            {reconnecting && <span className="lan-monitor__reconnecting">{t('reconnecting')}</span>}
+            <button className="lan-monitor__disconnect" onClick={() => leaveMonitor()}>
+              {t('disconnect')}
+            </button>
+          </div>
         </header>
         {error && <div className="lan-monitor__error">{error}</div>}
         <div className="lan-monitor__timeline">

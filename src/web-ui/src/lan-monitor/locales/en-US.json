@@ -32,5 +32,6 @@
   "subagent": "Subagent",
   "queueDepth": "Queue {{count}}",
   "reconnecting": "Connection interrupted. Reconnecting…",
+  "disconnect": "Disconnect",
   "connectionLost": "The desktop monitor stopped or pairing expired."
 }
