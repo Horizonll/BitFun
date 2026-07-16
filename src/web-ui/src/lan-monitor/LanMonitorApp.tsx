@@ -235,6 +235,7 @@ export default function LanMonitorApp() {
             setSessions(current => mergeSessionPoll(current, selectedSessionId, snapshot));
           }
           if (snapshot.transcriptChanged) {
+            setActiveTurn(null);
             await loadTranscript(selectedSessionId);
             await refreshSessions();
           }
@@ -388,8 +389,6 @@ export default function LanMonitorApp() {
   const renderActiveTurn = (turn: ActiveTurn) => (
     <section className="lan-monitor__active-turn">
       <header>
-        <span className="lan-monitor__live-dot" />
-        <strong>{t('live')}</strong>
         <span>{turn.status}</span>
         <button
           onClick={() =>
@@ -494,6 +493,9 @@ export default function LanMonitorApp() {
   }
 
   const selectedSession = sessions.find(session => session.session_id === selectedSessionId);
+  const activeTurnIsPersisted = Boolean(
+    activeTurn && transcript?.turns.some(turn => turn.turnId === activeTurn.turnId),
+  );
   return (
     <main className="lan-monitor">
       <aside className="lan-monitor__sidebar">
@@ -566,7 +568,7 @@ export default function LanMonitorApp() {
                 ))}
               </article>
             ))}
-            {activeTurn && renderActiveTurn(activeTurn)}
+            {activeTurn && !activeTurnIsPersisted && renderActiveTurn(activeTurn)}
             {loadingTranscript && <div className="lan-monitor__loading">{t('loading')}</div>}
             {!selectedSessionId && <div className="lan-monitor__empty">{t('selectSession')}</div>}
           </div>
