@@ -319,19 +319,23 @@ button {
 }
 
 .lan-monitor__tool {
-  overflow: hidden;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 10px;
-  background: var(--color-bg-scene);
+  min-width: 0;
 
   > header {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--color-border-subtle);
+    min-width: 0;
+    gap: 8px;
+    padding: 5px 0;
+
+    strong {
+      flex: 0 0 auto;
+      font-size: 13px;
+      font-weight: 500;
+    }
 
     span {
+      flex: 0 0 auto;
       color: var(--color-text-muted);
       font-size: 12px;
     }
@@ -344,46 +348,27 @@ button {
       white-space: nowrap;
     }
   }
-
-  details,
-  .lan-monitor__tool-error {
-    padding: 9px 14px;
-    border-bottom: 1px solid var(--color-border-subtle);
-  }
-
-  summary {
-    cursor: pointer;
-    color: var(--color-text-secondary);
-  }
-
-  pre {
-    max-height: 420px;
-    margin: 10px 0 0;
-    overflow: auto;
-    color: var(--color-text-secondary);
-    font-family: var(--font-family-mono);
-    font-size: 12px;
-    line-height: 1.55;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  > button,
-  .lan-monitor__tool-actions {
-    margin: 10px 14px;
-  }
 }
 
-.lan-monitor__tool-error {
+.lan-monitor__tool--completed .lan-monitor__tool-status {
+  color: var(--color-success);
+}
+
+.lan-monitor__tool--failed .lan-monitor__tool-status,
+.lan-monitor__tool--error .lan-monitor__tool-status,
+.lan-monitor__tool--rejected .lan-monitor__tool-status {
   color: var(--color-error);
 }
 
 .lan-monitor__tool-actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
+  margin-left: auto;
 
   button {
-    padding: 7px 12px;
+    padding: 3px 8px;
+    font-size: 12px;
   }
 }
 

@@ -62,6 +62,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3265,11 +3266,13 @@ pub struct RemoteSessionStateTracker {
     version: AtomicU64,
     state: RwLock<TrackerState>,
     event_tx: tokio::sync::broadcast::Sender<TrackerEvent>,
+    version_tx: tokio::sync::watch::Sender<u64>,
 }
 
 impl RemoteSessionStateTracker {
     pub fn new(session_id: String) -> Self {
         let (event_tx, _) = tokio::sync::broadcast::channel(1024);
+        let (version_tx, _) = tokio::sync::watch::channel(0);
         Self {
             target_session_id: session_id,
             version: AtomicU64::new(0),
@@ -3287,6 +3290,7 @@ impl RemoteSessionStateTracker {
                 linked_subagent_sessions: HashMap::new(),
             }),
             event_tx,
+            version_tx,
         }
     }
 
@@ -3298,8 +3302,17 @@ impl RemoteSessionStateTracker {
         self.version.load(Ordering::Relaxed)
     }
 
+    pub async fn wait_for_version_change(&self, since_version: u64, timeout: Duration) {
+        let mut receiver = self.version_tx.subscribe();
+        if *receiver.borrow_and_update() > since_version {
+            return;
+        }
+        let _ = tokio::time::timeout(timeout, receiver.changed()).await;
+    }
+
     fn bump_version(&self) {
-        self.version.fetch_add(1, Ordering::Relaxed);
+        let version = self.version.fetch_add(1, Ordering::Relaxed) + 1;
+        self.version_tx.send_replace(version);
     }
 
     pub fn snapshot_active_turn(&self) -> Option<ActiveTurnSnapshot> {

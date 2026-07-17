@@ -1836,8 +1836,9 @@ impl LanMonitorRuntimeHost for CoreLanMonitorRuntimeHost<'_> {
         self.ensure_current_workspace_session(session_id).await?;
         let tracker = self.dispatcher.ensure_tracker(session_id);
         if tracker.version() <= since_version {
-            let mut receiver = tracker.subscribe();
-            let _ = tokio::time::timeout(Duration::from_secs(15), receiver.recv()).await;
+            tracker
+                .wait_for_version_change(since_version, Duration::from_secs(15))
+                .await;
         }
         let version = tracker.version();
         let changed = version > since_version;

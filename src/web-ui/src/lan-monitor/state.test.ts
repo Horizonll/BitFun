@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { mergeOlderTranscriptPage, mergeSessionPoll } from './state';
+import {
+  isActiveTranscriptTurn,
+  mergeOlderTranscriptPage,
+  mergeSessionPoll,
+  shouldRetainActiveTurn,
+} from './state';
 import type { MonitorTurn, PollSnapshot, SessionInfo, TranscriptPage } from './types';
 
 function turn(turnId: string): MonitorTurn {
@@ -81,5 +86,43 @@ describe('LAN monitor read-only state projection', () => {
       active_turn_id: 'turn-live',
     });
     expect(merged[1]).toBe(sessions[1]);
+  });
+
+  it('renders a live snapshot in place of the matching persisted turn', () => {
+    const activeTurn = {
+      turnId: 'turn-2',
+      status: 'active',
+      roundIndex: 0,
+      text: 'streaming',
+      thinking: '',
+      tools: [],
+      items: [],
+    };
+
+    expect(isActiveTranscriptTurn('turn-2', activeTurn)).toBe(true);
+    expect(isActiveTranscriptTurn('turn-1', activeTurn)).toBe(false);
+  });
+
+  it('keeps live output during partial persistence and clears it after completion', () => {
+    const snapshot: PollSnapshot = {
+      version: 8,
+      changed: true,
+      activeTurn: {
+        turnId: 'turn-live',
+        status: 'active',
+        roundIndex: 1,
+        text: 'partial',
+        thinking: '',
+        tools: [],
+        items: [],
+      },
+      transcriptChanged: true,
+    };
+
+    expect(shouldRetainActiveTurn(snapshot)).toBe(true);
+    expect(shouldRetainActiveTurn({
+      ...snapshot,
+      activeTurn: { ...snapshot.activeTurn!, status: 'completed' },
+    })).toBe(false);
   });
 });

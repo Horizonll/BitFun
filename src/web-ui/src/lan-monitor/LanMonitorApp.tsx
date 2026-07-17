@@ -6,11 +6,15 @@ import {
   LanMonitorClient,
 } from './client';
 import { formatTimestamp, translate as t } from './i18n';
-import { mergeOlderTranscriptPage, mergeSessionPoll } from './state';
+import {
+  isActiveTranscriptTurn,
+  mergeOlderTranscriptPage,
+  mergeSessionPoll,
+  shouldRetainActiveTurn,
+} from './state';
 import type {
   ActiveTurn,
   MonitorItem,
-  MonitorTurn,
   PollSnapshot,
   SessionInfo,
   ToolItem,
@@ -20,24 +24,8 @@ import type {
 
 type Screen = 'pairing' | 'monitor';
 
-interface ExpandedResult {
-  text: string;
-  cursor: number;
-  hasMore: boolean;
-  loading: boolean;
-}
-
 const delay = (milliseconds: number) =>
   new Promise<void>(resolve => window.setTimeout(resolve, milliseconds));
-
-function formatValue(value: unknown): string {
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value ?? '');
-  }
-}
 
 const TOOL_SUMMARY_KEYS = [
   'search_term',
@@ -161,7 +149,6 @@ export default function LanMonitorApp() {
   const [transcript, setTranscript] = useState<TranscriptPage | null>(null);
   const [activeTurn, setActiveTurn] = useState<ActiveTurn | null>(null);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
-  const [expandedResults, setExpandedResults] = useState<Record<string, ExpandedResult>>({});
   const [clockMs, setClockMs] = useState(Date.now());
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const followOutputRef = useRef(true);
@@ -210,7 +197,6 @@ export default function LanMonitorApp() {
     setSelectedSessionId(null);
     setTranscript(null);
     setActiveTurn(null);
-    setExpandedResults({});
     setError(message);
   }, []);
 
@@ -338,9 +324,20 @@ export default function LanMonitorApp() {
             setSessions(current => mergeSessionPoll(current, selectedSessionId, snapshot));
           }
           if (snapshot.transcriptChanged) {
-            setActiveTurn(null);
-            await loadTranscript(selectedSessionId);
-            await refreshSessions();
+            if (snapshot.totalTurnCount != null) {
+              knownTurnCountRef.current = snapshot.totalTurnCount;
+            }
+            const refreshTurnId = snapshot.activeTurn?.turnId;
+            const retainActiveTurn = shouldRetainActiveTurn(snapshot);
+            void loadTranscript(selectedSessionId).then(() => {
+              if (!cancelled && !retainActiveTurn && refreshTurnId) {
+                setActiveTurn(current => current?.turnId === refreshTurnId ? null : current);
+              }
+            }).catch(loadError => {
+              if (!cancelled) {
+                setError(loadError instanceof Error ? loadError.message : String(loadError));
+              }
+            });
           }
         } catch {
           if (cancelled) return;
@@ -358,7 +355,7 @@ export default function LanMonitorApp() {
     return () => {
       cancelled = true;
     };
-  }, [command, leaveMonitor, loadTranscript, refreshSessions, screen, selectedSessionId]);
+  }, [command, leaveMonitor, loadTranscript, screen, selectedSessionId]);
 
   const loadOlder = async () => {
     if (!selectedSessionId || !transcript?.nextBeforeTurnId) return;
@@ -374,44 +371,6 @@ export default function LanMonitorApp() {
     );
   };
 
-  const loadToolResult = async (turn: MonitorTurn, tool: ToolItem) => {
-    if (!selectedSessionId || !tool.resultRef) return;
-    const key = `${turn.turnId}:${tool.id}`;
-    const existing = expandedResults[key];
-    const cursor = existing?.cursor ?? 0;
-    setExpandedResults(current => ({
-      ...current,
-      [key]: { text: existing?.text ?? '', cursor, hasMore: true, loading: true },
-    }));
-    try {
-      const response = await command({
-        action: 'get_tool_result_chunk',
-        session_id: selectedSessionId,
-        turn_id: turn.turnId,
-        tool_id: tool.id,
-        result_ref: tool.resultRef,
-        cursor,
-        limit: 65536,
-      });
-      if (response.resp !== 'lan_monitor_tool_result') return;
-      setExpandedResults(current => ({
-        ...current,
-        [key]: {
-          text: `${current[key]?.text ?? ''}${response.result.chunk}`,
-          cursor: response.result.nextCursor ?? cursor + response.result.chunk.length,
-          hasMore: response.result.hasMore,
-          loading: false,
-        },
-      }));
-    } catch (resultError) {
-      setExpandedResults(current => ({
-        ...current,
-        [key]: { ...(current[key] ?? { text: '', cursor, hasMore: true }), loading: false },
-      }));
-      setError(resultError instanceof Error ? resultError.message : String(resultError));
-    }
-  };
-
   const control = async (request: Record<string, unknown>) => {
     try {
       await command(request);
@@ -421,56 +380,33 @@ export default function LanMonitorApp() {
     }
   };
 
-  const renderTool = (turn: MonitorTurn, tool: ToolItem) => {
-    const key = `${turn.turnId}:${tool.id}`;
-    const expanded = expandedResults[key];
-    const resultText = expanded ? expanded.text : formatValue(tool.result);
+  const renderTool = (tool: ToolItem) => {
     const summary = toolSummary(
       tool.name,
       tool.input,
       tool.subagentModelDisplayName,
       t,
     );
+    const status = tool.error || tool.success === false ? 'error' : tool.status;
     return (
       <ItemShell key={tool.id}>
-        <section className={`lan-monitor__tool lan-monitor__tool--${tool.status}`}>
+        <section className={`lan-monitor__tool lan-monitor__tool--${status}`}>
           <header>
             <strong>{summary.label}</strong>
             {summary.detail && <span className="lan-monitor__tool-summary">{summary.detail}</span>}
-            <span>{toolStatusLabel(tool.status, t)}</span>
+            <span className="lan-monitor__tool-status">{toolStatusLabel(status, t)}</span>
             {tool.durationMs != null && (
               <span>{formatToolDuration(tool.durationMs, t)}</span>
             )}
           </header>
-          <details>
-            <summary>{t('toolInput')}</summary>
-            <pre>{formatValue(tool.input)}</pre>
-          </details>
-          {tool.result !== undefined && (
-            <details>
-              <summary>{t('toolOutput')}</summary>
-              <pre>{resultText}</pre>
-              {tool.resultTruncated && tool.resultRef && (expanded?.hasMore ?? true) && (
-                <button disabled={expanded?.loading} onClick={() => void loadToolResult(turn, tool)}>
-                  {t('loadMoreResult')}
-                </button>
-              )}
-            </details>
-          )}
-          {tool.error && (
-            <details className="lan-monitor__tool-error">
-              <summary>{t('toolError')}</summary>
-              <pre>{tool.error}</pre>
-            </details>
-          )}
         </section>
       </ItemShell>
     );
   };
 
-  const renderItem = (turn: MonitorTurn, item: MonitorItem) => {
+  const renderItem = (item: MonitorItem) => {
     if (item.parentTaskToolId || (item.subagentSessionId && item.type !== 'tool')) return null;
-    if (item.type === 'tool') return renderTool(turn, item);
+    if (item.type === 'tool') return renderTool(item);
     if (item.type === 'thinking') {
       return (
         <ItemShell key={item.id}>
@@ -530,41 +466,41 @@ export default function LanMonitorApp() {
           tool.startMs != null ? Math.max(0, clockMs - tool.startMs) : undefined
         );
         return (
-          <section key={tool.id} className="lan-monitor__tool">
+          <section key={tool.id} className={`lan-monitor__tool lan-monitor__tool--${tool.status}`}>
             <header>
               <strong>{summary.label}</strong>
               {summary.detail && <span className="lan-monitor__tool-summary">{summary.detail}</span>}
-              <span>{toolStatusLabel(tool.status, t)}</span>
+              <span className="lan-monitor__tool-status">{toolStatusLabel(tool.status, t)}</span>
               {durationMs != null && (
                 <span>{formatToolDuration(durationMs, t)}</span>
               )}
+              {tool.status === 'pending_confirmation' && selectedSessionId && (
+                <div className="lan-monitor__tool-actions">
+                  <button
+                    onClick={() =>
+                      void control({
+                        action: 'confirm_tool',
+                        session_id: selectedSessionId,
+                        tool_id: tool.id,
+                      })
+                    }
+                  >
+                    {t('confirmTool')}
+                  </button>
+                  <button
+                    onClick={() =>
+                      void control({
+                        action: 'reject_tool',
+                        session_id: selectedSessionId,
+                        tool_id: tool.id,
+                      })
+                    }
+                  >
+                    {t('rejectTool')}
+                  </button>
+                </div>
+              )}
             </header>
-            {tool.status === 'pending_confirmation' && selectedSessionId && (
-              <div className="lan-monitor__tool-actions">
-                <button
-                  onClick={() =>
-                    void control({
-                      action: 'confirm_tool',
-                      session_id: selectedSessionId,
-                      tool_id: tool.id,
-                    })
-                  }
-                >
-                  {t('confirmTool')}
-                </button>
-                <button
-                  onClick={() =>
-                    void control({
-                      action: 'reject_tool',
-                      session_id: selectedSessionId,
-                      tool_id: tool.id,
-                    })
-                  }
-                >
-                  {t('rejectTool')}
-                </button>
-              </div>
-            )}
           </section>
         );
       })}
@@ -609,7 +545,7 @@ export default function LanMonitorApp() {
   }
 
   const selectedSession = sessions.find(session => session.session_id === selectedSessionId);
-  const activeTurnIsPersisted = Boolean(
+  const activeTurnIsInTranscript = Boolean(
     activeTurn && transcript?.turns.some(turn => turn.turnId === activeTurn.turnId),
   );
   return (
@@ -665,26 +601,29 @@ export default function LanMonitorApp() {
                 {t('loadOlder')}
               </button>
             )}
-            {transcript?.turns.map(turn => (
-              <article key={turn.turnId} className="lan-monitor__turn">
-                <section className="lan-monitor__user-message">
-                  <header>
-                    <span>{formatTimestamp(turn.userMessage.timestamp)}</span>
-                    <span>{turn.status}</span>
-                  </header>
-                  <DarkMarkdownRenderer content={turn.userMessage.content} />
-                  {turn.userMessage.images?.map(image => (
-                    <img key={image.name} src={image.data_url} alt={image.name} />
-                  ))}
-                </section>
-                {turn.rounds.map(round => (
-                  <section key={round.id} className="lan-monitor__round">
-                    {round.items.map(item => renderItem(turn, item))}
+            {transcript?.turns.map(turn => {
+              const liveTurn = isActiveTranscriptTurn(turn.turnId, activeTurn) ? activeTurn : null;
+              return (
+                <article key={turn.turnId} className="lan-monitor__turn">
+                  <section className="lan-monitor__user-message">
+                    <header>
+                      <span>{formatTimestamp(turn.userMessage.timestamp)}</span>
+                      <span>{turn.status}</span>
+                    </header>
+                    <DarkMarkdownRenderer content={turn.userMessage.content} />
+                    {turn.userMessage.images?.map(image => (
+                      <img key={image.name} src={image.data_url} alt={image.name} />
+                    ))}
                   </section>
-                ))}
-              </article>
-            ))}
-            {activeTurn && !activeTurnIsPersisted && renderActiveTurn(activeTurn)}
+                  {liveTurn ? renderActiveTurn(liveTurn) : turn.rounds.map(round => (
+                    <section key={round.id} className="lan-monitor__round">
+                      {round.items.map(item => renderItem(item))}
+                    </section>
+                  ))}
+                </article>
+              );
+            })}
+            {activeTurn && !activeTurnIsInTranscript && renderActiveTurn(activeTurn)}
             {loadingTranscript && <div className="lan-monitor__loading">{t('loading')}</div>}
             {!selectedSessionId && <div className="lan-monitor__empty">{t('selectSession')}</div>}
           </div>

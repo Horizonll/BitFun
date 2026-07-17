@@ -1,4 +1,15 @@
-import type { PollSnapshot, SessionInfo, TranscriptPage } from './types';
+import type { ActiveTurn, PollSnapshot, SessionInfo, TranscriptPage } from './types';
+
+const FINISHED_TURN_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+export function isActiveTranscriptTurn(turnId: string, activeTurn: ActiveTurn | null): boolean {
+  return activeTurn?.turnId === turnId;
+}
+
+export function shouldRetainActiveTurn(snapshot: PollSnapshot): boolean {
+  const status = snapshot.activeTurn?.status.toLowerCase();
+  return Boolean(status && !FINISHED_TURN_STATUSES.has(status));
+}
 
 export function mergeOlderTranscriptPage(
   current: TranscriptPage,

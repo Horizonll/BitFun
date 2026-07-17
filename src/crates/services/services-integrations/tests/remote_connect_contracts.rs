@@ -2243,6 +2243,73 @@ fn remote_connect_tracker_preserves_streaming_snapshot_contract() {
     assert_eq!(items[1].content.as_deref(), Some("answer"));
 }
 
+#[tokio::test]
+async fn remote_connect_tracker_wakes_for_text_after_create_canvas() {
+    let tracker = RemoteSessionStateTracker::new("session-1".to_string());
+
+    tracker.handle_agentic_event(&AgenticEvent::DialogTurnStarted {
+        session_id: "session-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        turn_index: 0,
+        user_input: "create a canvas".to_string(),
+        original_user_input: None,
+        user_message_metadata: None,
+    });
+    tracker.handle_agentic_event(&AgenticEvent::ToolEvent {
+        session_id: "session-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        round_id: "round-1".to_string(),
+        attempt_id: None,
+        attempt_index: None,
+        tool_event: ToolEventData::Started {
+            tool_id: "canvas-1".to_string(),
+            tool_name: "CreateCanvas".to_string(),
+            params: serde_json::json!({ "title": "Demo" }),
+            timeout_seconds: None,
+        },
+    });
+    tracker.handle_agentic_event(&AgenticEvent::ToolEvent {
+        session_id: "session-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        round_id: "round-1".to_string(),
+        attempt_id: None,
+        attempt_index: None,
+        tool_event: ToolEventData::Completed {
+            tool_id: "canvas-1".to_string(),
+            tool_name: "CreateCanvas".to_string(),
+            result: serde_json::json!({ "success": true }),
+            result_for_assistant: None,
+            duration_ms: 25,
+            queue_wait_ms: None,
+            preflight_ms: None,
+            confirmation_wait_ms: None,
+            execution_ms: Some(25),
+        },
+    });
+
+    let since_version = tracker.version();
+    tracker.handle_agentic_event(&AgenticEvent::TextChunk {
+        session_id: "session-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        round_id: "round-2".to_string(),
+        attempt_id: None,
+        attempt_index: None,
+        text: "Canvas created.".to_string(),
+    });
+
+    tracker
+        .wait_for_version_change(since_version, std::time::Duration::from_millis(50))
+        .await;
+    assert!(tracker.version() > since_version);
+    let snapshot = tracker
+        .snapshot_active_turn()
+        .expect("active turn after CreateCanvas");
+    let items = snapshot.items.expect("ordered items after CreateCanvas");
+    assert!(items.iter().any(|item| {
+        item.item_type == "text" && item.content.as_deref() == Some("Canvas created.")
+    }));
+}
+
 #[test]
 fn remote_connect_tracker_keeps_subagent_items_out_of_parent_accumulators() {
     let tracker = RemoteSessionStateTracker::new("parent-session".to_string());
