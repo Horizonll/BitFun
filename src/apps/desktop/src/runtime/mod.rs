@@ -74,19 +74,51 @@ impl DesktopRuntimeContext {
             loop {
                 match receiver.recv().await {
                     Ok(event) => {
+                        let fanout = crate::api::peer_host_invoke::track_permission_event(&event);
+                        if fanout {
+                            if let Ok(payload) = serde_json::to_value(&event) {
+                                crate::api::remote_connect_api::maybe_fanout_peer_ui_event(
+                                    "permission://event",
+                                    payload,
+                                );
+                            }
+                        }
                         let _ = app.emit("permission://event", event);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         if let Ok(requests) = runtime.pending_permission_requests() {
                             for request in requests {
-                                let _ = app.emit(
-                                    "permission://event",
-                                    PermissionRequestEvent::Asked { request },
-                                );
+                                let event = PermissionRequestEvent::Asked { request };
+                                let fanout =
+                                    crate::api::peer_host_invoke::track_permission_event(&event);
+                                if fanout {
+                                    if let Ok(payload) = serde_json::to_value(&event) {
+                                        crate::api::remote_connect_api::maybe_fanout_peer_ui_event(
+                                            "permission://event",
+                                            payload,
+                                        );
+                                    }
+                                }
+                                let _ = app.emit("permission://event", event);
                             }
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        let request_ids =
+                            crate::api::peer_host_invoke::take_tracked_permission_requests();
+                        if let Err(error) =
+                            crate::api::peer_host_invoke::fail_closed_permission_requests(
+                                request_ids,
+                                "Peer permission event stream closed",
+                            )
+                            .await
+                        {
+                            log::warn!(
+                                "Peer permission requests were not fully cancelled: {error}"
+                            );
+                        }
+                        break;
+                    }
                 }
             }
         });

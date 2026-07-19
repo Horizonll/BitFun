@@ -23,6 +23,47 @@ impl ChatMode {
         chat_state: &mut ChatState,
         rt_handle: &tokio::runtime::Handle,
     ) -> Result<Option<ChatExitReason>> {
+        if action_id == "toggle_auto_approve" || action_id.starts_with("toggle_auto_approve:") {
+            let action = action_by_id("toggle_auto_approve", ActionContext::Chat)
+                .expect("Auto mode action must remain registered");
+            let state = ActionState::chat(chat_state.is_processing, false);
+            if !action.available(state) {
+                chat_view.set_status(Some(action.unavailable_message(state)));
+                return Ok(None);
+            }
+            let argument = action_id.strip_prefix("toggle_auto_approve:");
+            let next = match argument {
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some("default") => None,
+                _ => Some(!chat_state.auto_approve_ask),
+            };
+            self.auto_approve_ask_override = next;
+            chat_state.auto_approve_ask = next.unwrap_or(self.auto_approve_ask_default);
+            self.agent
+                .set_approval_policy(if chat_state.auto_approve_ask {
+                    crate::runtime::approval::CliApprovalPolicy::Auto
+                } else if next.is_some() {
+                    crate::runtime::approval::CliApprovalPolicy::DisableAuto
+                } else {
+                    crate::runtime::approval::CliApprovalPolicy::Ask
+                });
+            chat_view.set_status(Some(if next.is_none() {
+                format!(
+                    "Auto mode reset to user default ({}) for this session",
+                    if self.auto_approve_ask_default {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                )
+            } else if chat_state.auto_approve_ask {
+                "Auto mode enabled for this session".to_string()
+            } else {
+                "Auto mode disabled for this session".to_string()
+            }));
+            return Ok(None);
+        }
         if let Some(external) = self.external_command_projection_for_action(action_id) {
             return self.select_and_handle_external_command(
                 &external, "", chat_view, chat_state, rt_handle,
@@ -82,6 +123,29 @@ impl ChatMode {
             .get(token.len()..)
             .map(str::trim_start)
             .unwrap_or("");
+        if command_name == "auto" {
+            let action_id = match arguments.trim() {
+                "on" | "enable" => "toggle_auto_approve:on",
+                "off" | "disable" => "toggle_auto_approve:off",
+                "default" | "reset" => "toggle_auto_approve:default",
+                "" | "toggle" => "toggle_auto_approve",
+                other => {
+                    chat_view.set_status(Some(format!(
+                        "Usage: /auto [on|off|default|toggle] (current: {})",
+                        if chat_state.auto_approve_ask {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    )));
+                    chat_state.add_system_message(format!(
+                        "Unknown Auto mode value '{other}'. Use on, off, default, or toggle."
+                    ));
+                    return Ok(None);
+                }
+            };
+            return self.handle_action_id(action_id, chat_view, chat_state, rt_handle);
+        }
         if let Some(candidate) = self.external_conflict_projection_for_alias(token) {
             return self.select_and_handle_external_command(
                 &candidate, arguments, chat_view, chat_state, rt_handle,
@@ -616,6 +680,7 @@ impl ChatMode {
                 ));
             }
             ActionHandler::Usage => self.show_usage_report(chat_view, chat_state, rt_handle),
+            ActionHandler::ToggleAutoApprove => {}
             ActionHandler::Exit => {
                 if chat_state.is_processing {
                     self.cancel_active_turn(chat_view, rt_handle);
@@ -740,5 +805,4 @@ impl ChatMode {
             chat_view.insert_paste(&text);
         }
     }
-
 }

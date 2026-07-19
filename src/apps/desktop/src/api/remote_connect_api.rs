@@ -198,6 +198,7 @@ fn should_fanout_peer_ui_event(event: &str) -> bool {
             | "backend-event-toolexecutionerror"
             | "backend-event-toolawaitinguserinput"
             | "backend-event-toolcallconfirmation"
+            | "permission://event"
     )
 }
 
@@ -1351,6 +1352,21 @@ pub async fn account_connect_devices() -> Result<Vec<OnlineDeviceInfo>, String> 
                 }
                 RelayEvent::DevicePresence { devices } => {
                     log::info!("Device presence updated: {} online", devices.len());
+                    let online_device_ids = devices
+                        .iter()
+                        .map(|device| device.device_id.clone())
+                        .collect::<std::collections::HashSet<_>>();
+                    let request_ids =
+                        crate::api::peer_host_invoke::retain_online_controllers(&online_device_ids);
+                    if let Err(error) =
+                        crate::api::peer_host_invoke::fail_closed_permission_requests(
+                            request_ids,
+                            "Last Peer controller went offline",
+                        )
+                        .await
+                    {
+                        log::warn!("Peer permission requests were not fully cancelled: {error}");
+                    }
                     let pairs: Vec<(String, String)> = devices
                         .iter()
                         .map(|d| (d.device_id.clone(), d.device_name.clone()))
@@ -1508,12 +1524,32 @@ pub async fn account_connect_devices() -> Result<Vec<OnlineDeviceInfo>, String> 
                 }
                 RelayEvent::Disconnected => {
                     log::info!("Device routing disconnected");
+                    let request_ids =
+                        crate::api::peer_host_invoke::take_tracked_permission_requests();
+                    if let Err(error) =
+                        crate::api::peer_host_invoke::fail_closed_permission_requests(
+                            request_ids,
+                            "Peer device-routing connection lost",
+                        )
+                        .await
+                    {
+                        log::warn!("Peer permission requests were not fully cancelled: {error}");
+                    }
                 }
                 RelayEvent::Reconnected => {
                     log::info!("Device routing reconnected — AuthConnect re-sent by transport");
                 }
                 _ => {}
             }
+        }
+        let request_ids = crate::api::peer_host_invoke::disconnect_controllers();
+        if let Err(error) = crate::api::peer_host_invoke::fail_closed_permission_requests(
+            request_ids,
+            "Peer device-routing stream closed",
+        )
+        .await
+        {
+            log::warn!("Peer permission requests were not fully cancelled: {error}");
         }
     });
 
@@ -2663,7 +2699,13 @@ async fn execute_local_remote_command(
                     .or_else(|| args.get("controller_device_id"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                crate::api::peer_host_invoke::detach_controller(controller_id);
+                let request_ids = crate::api::peer_host_invoke::detach_controller(controller_id);
+                crate::api::peer_host_invoke::fail_closed_permission_requests(
+                    request_ids,
+                    "Last Peer controller detached",
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
                 return serde_json::to_value(RemoteResponse::HostInvokeResult {
                     ok: true,
                     value: Some(serde_json::json!({ "detached": true })),
@@ -2878,5 +2920,16 @@ mod sync_state_tests {
         assert_eq!(state.last_session_since, 5);
         state.advance_session_since([9]);
         assert_eq!(state.last_session_since, 9);
+    }
+}
+
+#[cfg(test)]
+mod peer_event_tests {
+    use super::should_fanout_peer_ui_event;
+
+    #[test]
+    fn permission_events_are_fanned_out_to_peer_controllers() {
+        assert!(should_fanout_peer_ui_event("permission://event"));
+        assert!(!should_fanout_peer_ui_event("permission://internal"));
     }
 }

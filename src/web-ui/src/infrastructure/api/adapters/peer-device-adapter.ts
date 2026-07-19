@@ -92,6 +92,13 @@ const HIGH_PRIORITY_COMMANDS = new Set([
   'reload_config',
   'start_dialog_turn',
   'cancel_dialog_turn',
+  'list_pending_permission_requests',
+  'subscribe_permission_requests',
+  'respond_permission',
+  'list_project_permission_grants',
+  'remove_project_permission_grant',
+  'clear_project_permission_grants',
+  'list_project_permission_audit',
   // Interactive directory picking / browsing on the peer
   'get_directory_children',
   'get_directory_children_paginated',

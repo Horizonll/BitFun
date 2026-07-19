@@ -327,6 +327,7 @@ impl ExecMode {
         let approval_mode = match runtime.approval_policy() {
             crate::runtime::approval::CliApprovalPolicy::Auto => ExecApprovalMode::Auto,
             crate::runtime::approval::CliApprovalPolicy::Ask
+            | crate::runtime::approval::CliApprovalPolicy::DisableAuto
             | crate::runtime::approval::CliApprovalPolicy::Reject => ExecApprovalMode::Reject,
         };
         let agent = Arc::new(CoreAgentAdapter::new(

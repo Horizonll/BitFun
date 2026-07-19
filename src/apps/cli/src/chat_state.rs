@@ -307,6 +307,8 @@ pub(crate) struct ChatState {
     pub workspace: Option<String>,
     /// Current model display name (shown in shortcuts bar)
     pub current_model_name: String,
+    /// Effective Auto mode for permission results that evaluate to Ask.
+    pub auto_approve_ask: bool,
     /// Messages for UI rendering
     pub messages: Vec<ChatMessage>,
     /// Session statistics
@@ -347,6 +349,7 @@ impl ChatState {
             agent_type,
             workspace,
             current_model_name: String::new(),
+            auto_approve_ask: false,
             messages: Vec::new(),
             metadata: ChatMetadata::default(),
             current_turn_id: None,

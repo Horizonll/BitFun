@@ -71,6 +71,7 @@ pub(crate) enum ActionHandler {
     Init,
     History,
     Usage,
+    ToggleAutoApprove,
     Exit,
     Login,
     Logout,
@@ -443,6 +444,21 @@ static ACTION_SPECS: &[ActionSpec] = &[
         palette: palette("Session", true),
         shortcut_label: None,
         slash_on_startup: true,
+    },
+    ActionSpec {
+        id: "toggle_auto_approve",
+        name: "Auto mode",
+        aliases: &["/auto"],
+        description: "Toggle Auto mode for the current session",
+        contexts: CHAT,
+        availability: ActionAvailability::Idle,
+        handler: ActionHandler::ToggleAutoApprove,
+        default_bindings: &[],
+        fallback_bindings: &[],
+        shortcut_field: None,
+        palette: palette("Session", false),
+        shortcut_label: None,
+        slash_on_startup: false,
     },
     ActionSpec {
         id: "exit",
@@ -1658,6 +1674,16 @@ mod tests {
             ),
             Some("cycle_agent")
         );
+    }
+
+    #[test]
+    fn auto_mode_is_chat_only_and_idle_only() {
+        assert!(action_for_alias("/auto", ActionContext::Startup).is_none());
+
+        let action = action_for_alias("/auto", ActionContext::Chat).unwrap();
+        assert_eq!(action.handler, ActionHandler::ToggleAutoApprove);
+        assert!(action.available(ActionState::chat(false, false)));
+        assert!(!action.available(ActionState::chat(true, false)));
     }
 
     #[test]

@@ -29,6 +29,19 @@ impl ChatMode {
 
         // Create or restore core session
         let rt_handle = tokio::runtime::Handle::current();
+        self.auto_approve_ask_default = tokio::task::block_in_place(|| {
+            rt_handle.block_on(async {
+                let Ok(service) = bitfun_core::service::config::get_global_config_service().await
+                else {
+                    return false;
+                };
+                service
+                    .get_config::<bitfun_core::service::config::types::GlobalConfig>(None)
+                    .await
+                    .map(|config| config.tool_permissions.interaction.auto_approve_ask)
+                    .unwrap_or(false)
+            })
+        });
 
         let (mut session_id, mut chat_state) = if let Some(ref restore_id) = self.restore_session_id
         {
@@ -85,6 +98,10 @@ impl ChatMode {
             );
             (session_id, state)
         };
+        self.auto_approve_ask_override = None;
+        self.agent
+            .set_approval_policy(crate::runtime::approval::CliApprovalPolicy::Ask);
+        chat_state.auto_approve_ask = self.auto_approve_ask_default;
 
         // Keep ChatMode workspace in sync with the session's effective workspace
         self.agent_type = chat_state.agent_type.clone();

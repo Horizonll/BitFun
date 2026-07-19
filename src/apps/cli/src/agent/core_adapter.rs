@@ -47,16 +47,26 @@ fn cli_approval_metadata(
     approval_policy: CliApprovalPolicy,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut metadata = serde_json::Map::new();
-    if approval_policy != CliApprovalPolicy::Ask {
+    if matches!(
+        approval_policy,
+        CliApprovalPolicy::Reject | CliApprovalPolicy::Auto
+    ) {
         metadata.insert(
             USER_INPUT_AVAILABLE_CONTEXT_KEY.to_string(),
             serde_json::Value::Bool(false),
         );
     }
-    metadata.insert(
-        AUTO_APPROVE_ASK_CONTEXT_KEY.to_string(),
-        serde_json::Value::Bool(approval_policy == CliApprovalPolicy::Auto),
-    );
+    let auto_approve_ask = match approval_policy {
+        CliApprovalPolicy::Ask => None,
+        CliApprovalPolicy::DisableAuto | CliApprovalPolicy::Reject => Some(false),
+        CliApprovalPolicy::Auto => Some(true),
+    };
+    if let Some(auto_approve_ask) = auto_approve_ask {
+        metadata.insert(
+            AUTO_APPROVE_ASK_CONTEXT_KEY.to_string(),
+            serde_json::Value::Bool(auto_approve_ask),
+        );
+    }
     metadata
 }
 
@@ -66,7 +76,7 @@ pub(crate) struct CoreAgentAdapter {
     runtime: AgentRuntime,
     compatibility: CoreAgentRuntimeCompatibility,
     event_source: CliAgentEventSource,
-    approval_policy: CliApprovalPolicy,
+    approval_policy: Arc<RwLock<CliApprovalPolicy>>,
     workspace_path: Arc<RwLock<Option<PathBuf>>>,
     /// Session ID — uses Mutex for interior mutability
     session_id: Arc<Mutex<Option<String>>>,
@@ -80,7 +90,7 @@ impl CoreAgentAdapter {
             runtime: runtime.agent_runtime().clone(),
             compatibility: runtime.compatibility().clone(),
             event_source: runtime.agent_events().clone(),
-            approval_policy: runtime.approval_policy(),
+            approval_policy: Arc::new(RwLock::new(runtime.approval_policy())),
             workspace_path: Arc::new(RwLock::new(workspace_path)),
             session_id: Arc::new(Mutex::new(None)),
             current_turn_id: Arc::new(Mutex::new(None)),
@@ -89,6 +99,20 @@ impl CoreAgentAdapter {
 
     pub(crate) fn event_source(&self) -> &CliAgentEventSource {
         &self.event_source
+    }
+
+    pub(crate) fn set_approval_policy(&self, policy: CliApprovalPolicy) {
+        *self
+            .approval_policy
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
+    }
+
+    pub(crate) fn approval_policy(&self) -> CliApprovalPolicy {
+        *self
+            .approval_policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub(crate) fn workspace_path_buf(&self) -> PathBuf {
@@ -410,7 +434,7 @@ impl Agent for CoreAgentAdapter {
         }
 
         // Start the dialog turn; events arrive through the shared broadcast source.
-        let metadata = cli_approval_metadata(self.approval_policy);
+        let metadata = cli_approval_metadata(self.approval_policy());
         let request = AgentDialogTurnRequest {
             session_id: session_id.clone(),
             message: message.clone(),
@@ -542,8 +566,12 @@ mod tests {
         assert_eq!(reject[AUTO_APPROVE_ASK_CONTEXT_KEY], false);
 
         let ask = cli_approval_metadata(CliApprovalPolicy::Ask);
-        assert_eq!(ask[AUTO_APPROVE_ASK_CONTEXT_KEY], false);
+        assert!(!ask.contains_key(AUTO_APPROVE_ASK_CONTEXT_KEY));
         assert!(!ask.contains_key(USER_INPUT_AVAILABLE_CONTEXT_KEY));
+
+        let disabled = cli_approval_metadata(CliApprovalPolicy::DisableAuto);
+        assert_eq!(disabled[AUTO_APPROVE_ASK_CONTEXT_KEY], false);
+        assert!(!disabled.contains_key(USER_INPUT_AVAILABLE_CONTEXT_KEY));
     }
 
     #[test]

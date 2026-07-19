@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
+use bitfun_agent_runtime::sdk::PermissionRequestEvent;
 use bitfun_agent_tools::effective_tool_invocation;
 use bitfun_core::service::remote_connect::encryption::encrypt_to_base64;
 use bitfun_core::service::remote_connect::remote_server::RemoteCommand;
@@ -74,6 +75,7 @@ fn peer_event_sender() -> &'static mpsc::Sender<QueuedPeerDeviceEvent> {
 
 /// Subscribe to the invocation-scoped event source and forward only Peer-owned turns.
 pub(crate) fn start_peer_event_fanout(state: PeerHostState) {
+    start_peer_permission_event_fanout(state.clone());
     let mut rx = state.agent_events.subscribe();
     state.turns.mark_event_stream_ready();
     tokio::spawn(async move {
@@ -111,6 +113,82 @@ pub(crate) fn start_peer_event_fanout(state: PeerHostState) {
             }
         }
     });
+}
+
+fn start_peer_permission_event_fanout(state: PeerHostState) {
+    let Ok(mut receiver) = state.agent_runtime.subscribe_permission_requests() else {
+        tracing::warn!("CLI Peer permission event fanout is unavailable");
+        return;
+    };
+    tokio::spawn(async move {
+        let mut owned_request_ids = HashSet::new();
+        loop {
+            match receiver.recv().await {
+                Ok(event) => match &event {
+                    PermissionRequestEvent::Asked { request } => {
+                        if !state.turns.owns(&request.session_id, None) {
+                            continue;
+                        }
+                        owned_request_ids.insert(request.request_id.clone());
+                        fanout_permission_event(event).await;
+                    }
+                    PermissionRequestEvent::Replied { request_id, .. }
+                    | PermissionRequestEvent::Cancelled { request_id, .. } => {
+                        if owned_request_ids.remove(request_id) {
+                            fanout_permission_event(event).await;
+                        }
+                    }
+                },
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!("CLI Peer permission event fanout lagged by {skipped} events");
+                    let pending = state
+                        .agent_runtime
+                        .pending_permission_requests()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|request| state.turns.owns(&request.session_id, None))
+                        .collect::<Vec<_>>();
+                    let pending_ids = pending
+                        .iter()
+                        .map(|request| request.request_id.clone())
+                        .collect::<HashSet<_>>();
+                    let stale_request_ids = owned_request_ids
+                        .difference(&pending_ids)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for request_id in stale_request_ids {
+                        fanout_permission_event(PermissionRequestEvent::Cancelled {
+                            request_id,
+                            reason: "Permission event stream resynchronized".to_string(),
+                        })
+                        .await;
+                    }
+                    owned_request_ids = pending_ids;
+                    for request in pending {
+                        fanout_permission_event(PermissionRequestEvent::Asked { request }).await;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    if let Err(error) = state
+                        .cancel_and_drain_peer_turns("Peer permission event stream closed")
+                        .await
+                    {
+                        tracing::warn!(
+                            "Peer work was not fully cancelled after permission event closure: {error}"
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+    });
+}
+
+async fn fanout_permission_event(event: PermissionRequestEvent) {
+    match serde_json::to_value(event) {
+        Ok(payload) => fanout_peer_device_event("permission://event".to_string(), payload).await,
+        Err(error) => tracing::warn!("CLI Peer permission event serialization failed: {error}"),
+    }
 }
 
 async fn interrupt_and_fail_peer_turns(state: &PeerHostState, closed: bool, reason: &'static str) {

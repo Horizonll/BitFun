@@ -161,6 +161,10 @@ pub(crate) struct ChatMode {
     workspace: Option<String>,
     agent: Arc<CoreAgentAdapter>,
     runtime: Arc<CliRuntimeContext>,
+    /// User-level default resolved from shared config for this TUI run.
+    auto_approve_ask_default: bool,
+    /// Temporary override for the current session only.
+    auto_approve_ask_override: Option<bool>,
     /// If set, restore this existing session instead of creating a new one
     restore_session_id: Option<String>,
     /// If set, send this prompt automatically when the session starts
@@ -206,6 +210,8 @@ impl ChatMode {
             workspace,
             agent,
             runtime,
+            auto_approve_ask_default: false,
+            auto_approve_ask_override: None,
             restore_session_id: None,
             initial_prompt: None,
             pending_mcp_op: None,

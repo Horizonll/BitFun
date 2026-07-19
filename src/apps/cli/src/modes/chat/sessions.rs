@@ -44,6 +44,10 @@ impl ChatMode {
         *chat_state = new_state;
         self.agent_type = restored_agent_type;
         self.workspace = chat_state.workspace.clone();
+        self.auto_approve_ask_override = None;
+        chat_state.auto_approve_ask = self.auto_approve_ask_default;
+        self.agent
+            .set_approval_policy(crate::runtime::approval::CliApprovalPolicy::Ask);
 
         // Reload model name
         self.load_current_model_name(chat_state, rt_handle);
@@ -81,6 +85,10 @@ impl ChatMode {
         *session_id = new_session_id;
         *chat_state = new_state;
         self.workspace = chat_state.workspace.clone();
+        self.auto_approve_ask_override = None;
+        chat_state.auto_approve_ask = self.auto_approve_ask_default;
+        self.agent
+            .set_approval_policy(crate::runtime::approval::CliApprovalPolicy::Ask);
 
         // Reload model name
         self.load_current_model_name(chat_state, rt_handle);
@@ -206,5 +214,4 @@ impl ChatMode {
             }
         }
     }
-
 }

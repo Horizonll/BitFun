@@ -22,6 +22,20 @@ describe('peerInvokePriorityFor', () => {
     expect(peerInvokePriorityFor('get_system_info')).toBe('high');
   });
 
+  it('ranks permission control commands high', () => {
+    for (const command of [
+      'list_pending_permission_requests',
+      'subscribe_permission_requests',
+      'respond_permission',
+      'list_project_permission_grants',
+      'remove_project_permission_grant',
+      'clear_project_permission_grants',
+      'list_project_permission_audit',
+    ]) {
+      expect(peerInvokePriorityFor(command)).toBe('high');
+    }
+  });
+
   it('ranks git/ssh/editor/fs/search noise low', () => {
     expect(peerInvokePriorityFor('git_is_repository')).toBe('low');
     expect(peerInvokePriorityFor('ssh_is_connected')).toBe('low');

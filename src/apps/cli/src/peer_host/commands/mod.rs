@@ -4,6 +4,7 @@ mod config;
 mod dialog;
 mod filesystem;
 mod git;
+mod permission;
 mod session;
 mod snapshot;
 mod soft;
@@ -77,6 +78,21 @@ pub(crate) async fn dispatch(
         // Dialog / tools
         "start_dialog_turn" => dialog::start_dialog_turn(state, args).await,
         "cancel_dialog_turn" => dialog::cancel_dialog_turn(state, args).await,
+        "list_pending_permission_requests" => permission::list_pending_permission_requests(state),
+        "subscribe_permission_requests" => permission::subscribe_permission_requests(),
+        "respond_permission" => permission::respond_permission(state, args).await,
+        "list_project_permission_grants" => {
+            permission::list_project_permission_grants(state, args).await
+        }
+        "remove_project_permission_grant" => {
+            permission::remove_project_permission_grant(state, args).await
+        }
+        "clear_project_permission_grants" => {
+            permission::clear_project_permission_grants(state, args).await
+        }
+        "list_project_permission_audit" => {
+            permission::list_project_permission_audit(state, args).await
+        }
 
         // Git (local workspace only)
         "git_is_repository" => git::git_is_repository(args).await,

@@ -43,6 +43,7 @@ const DEFAULT_ITEM_ORDER: &[&str] = &[
     "new_session",
     "sessions",
     "usage",
+    "toggle_auto_approve",
     "skills",
     "subagents",
     "select_model",
@@ -763,6 +764,7 @@ mod tests {
 
         assert!(!ids.iter().any(|id| id == "switch_agent"));
         assert!(!ids.iter().any(|id| id == "new_session"));
+        assert!(!ids.iter().any(|id| id == "toggle_auto_approve"));
         assert!(ids.iter().any(|id| id == "help"));
     }
 
