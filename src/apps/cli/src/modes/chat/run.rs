@@ -174,11 +174,10 @@ impl ChatMode {
             .subscribe_permission_requests()
             .ok();
         if let Ok(pending) = self.runtime.agent_runtime().pending_permission_requests() {
-            if let Some(request) = pending
-                .into_iter()
-                .find(|request| request.session_id == session_id)
-            {
-                chat_state.permission_v2_prompt = Some(PermissionV2Prompt::new(request));
+            for request in pending.into_iter().filter(|request| {
+                crate::runtime::approval::permission_request_targets_session(request, &session_id)
+            }) {
+                chat_state.enqueue_permission_request(request);
             }
         }
 
@@ -251,10 +250,12 @@ impl ChatMode {
                     match receiver.try_recv() {
                         Ok(bitfun_agent_runtime::sdk::PermissionRequestEvent::Asked {
                             request,
-                        }) if request.session_id == session_id => {
-                            if chat_state.permission_v2_prompt.is_none() {
-                                chat_state.permission_v2_prompt =
-                                    Some(PermissionV2Prompt::new(request));
+                        }) if crate::runtime::approval::permission_request_targets_session(
+                            &request,
+                            &session_id,
+                        ) =>
+                        {
+                            if chat_state.enqueue_permission_request(request) {
                                 needs_redraw = true;
                             }
                         }
@@ -266,12 +267,7 @@ impl ChatMode {
                             request_id,
                             ..
                         }) => {
-                            if chat_state
-                                .permission_v2_prompt
-                                .as_ref()
-                                .is_some_and(|prompt| prompt.request.request_id == request_id)
-                            {
-                                chat_state.permission_v2_prompt = None;
+                            if chat_state.resolve_permission_request(&request_id) {
                                 needs_redraw = true;
                             }
                         }

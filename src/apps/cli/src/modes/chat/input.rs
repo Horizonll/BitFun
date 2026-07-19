@@ -26,7 +26,7 @@ impl ChatMode {
                     });
                     match result {
                         Ok(()) => {
-                            chat_state.permission_v2_prompt = None;
+                            chat_state.resolve_permission_request(&request_id);
                             chat_view.set_status(Some("Permission response sent".to_string()));
                         }
                         Err(error) => {

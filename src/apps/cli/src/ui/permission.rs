@@ -91,6 +91,20 @@ impl PermissionV2Prompt {
 
 // ============ Rendering ============
 
+fn permission_delegation_lines(request: &PermissionV2Request) -> Option<[String; 2]> {
+    let delegation = request.delegation.as_ref()?;
+    Some([
+        format!(
+            "Subagent: {}  Child session: {}",
+            delegation.subagent_type, request.session_id
+        ),
+        format!(
+            "Parent session: {}  Task: {}",
+            delegation.parent_session_id, delegation.parent_tool_call_id
+        ),
+    ])
+}
+
 pub(super) fn render_permission_v2_overlay(
     frame: &mut Frame,
     prompt: &PermissionV2Prompt,
@@ -98,6 +112,12 @@ pub(super) fn render_permission_v2_overlay(
     area: Rect,
 ) {
     let overlay_height = 11u16.min(area.height.saturating_sub(2));
+    let overlay_height = if prompt.request.delegation.is_some() {
+        overlay_height.saturating_add(2)
+    } else {
+        overlay_height
+    }
+    .min(area.height.saturating_sub(2));
     let overlay_area = Rect {
         x: area.x,
         y: area.y + area.height.saturating_sub(overlay_height),
@@ -137,7 +157,7 @@ pub(super) fn render_permission_v2_overlay(
         .or_else(|| request.display_metadata.get("risk"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("No additional risk information");
-    let lines = vec![
+    let mut lines = vec![
         Line::from(Span::styled(
             "Permission required",
             Style::default()
@@ -148,6 +168,11 @@ pub(super) fn render_permission_v2_overlay(
             "Action: {}  Source: {:?}:{}",
             request.action, request.source.kind, request.source.identity
         )),
+    ];
+    if let Some(delegation_lines) = permission_delegation_lines(request) {
+        lines.extend(delegation_lines.map(Line::from));
+    }
+    lines.extend([
         Line::from(format!("Resources: {resources}")),
         Line::from(format!("Project: {}  {save_scope}", request.project_id)),
         Line::from(format!("Risk: {}", truncate_str(risk, 100))),
@@ -159,7 +184,7 @@ pub(super) fn render_permission_v2_overlay(
         } else {
             Line::from("")
         },
-    ];
+    ]);
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
     render_button_bar(
         frame,
@@ -235,9 +260,10 @@ fn render_button_bar(
 
 #[cfg(test)]
 mod tests {
-    use super::{PermissionV2Action, PermissionV2Prompt};
+    use super::{permission_delegation_lines, PermissionV2Action, PermissionV2Prompt};
     use bitfun_agent_runtime::sdk::{
-        PermissionReply, PermissionRequestSource, PermissionRequestSourceKind, PermissionV2Request,
+        PermissionDelegationContext, PermissionReply, PermissionRequestSource,
+        PermissionRequestSourceKind, PermissionV2Request,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::Map;
@@ -290,6 +316,27 @@ mod tests {
             PermissionV2Action::Reply(PermissionReply::Reject {
                 feedback: Some("read only".to_string()),
             })
+        );
+    }
+
+    #[test]
+    fn delegated_prompt_names_the_child_and_parent_task_context() {
+        let mut request = request();
+        request.session_id = "child-session".to_string();
+        request.agent_id = "Explore".to_string();
+        request.delegation = Some(PermissionDelegationContext {
+            parent_session_id: "parent-session".to_string(),
+            parent_dialog_turn_id: "parent-turn".to_string(),
+            parent_tool_call_id: "parent-task".to_string(),
+            subagent_type: "Explore".to_string(),
+        });
+
+        assert_eq!(
+            permission_delegation_lines(&request),
+            Some([
+                "Subagent: Explore  Child session: child-session".to_string(),
+                "Parent session: parent-session  Task: parent-task".to_string(),
+            ])
         );
     }
 }
