@@ -41,6 +41,81 @@ impl PermissionRule {
 /// A rule list whose order is significant: later matching rules win.
 pub type PermissionRuleset = Vec<PermissionRule>;
 
+/// Product-facing baseline for static tool permission rules.
+///
+/// Presets expand into ordinary rules and never bypass permission evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionPolicyPreset {
+    #[default]
+    Ask,
+    FullAccess,
+}
+
+impl PermissionPolicyPreset {
+    pub const fn effect(self) -> PermissionEffect {
+        match self {
+            Self::Ask => PermissionEffect::Ask,
+            Self::FullAccess => PermissionEffect::Allow,
+        }
+    }
+
+    pub fn baseline_rule(self) -> PermissionRule {
+        PermissionRule::new("*", "*", self.effect())
+    }
+}
+
+/// Static user-level policy. Custom rules are evaluated after the preset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PermissionPolicyConfig {
+    pub preset: PermissionPolicyPreset,
+    pub rules: PermissionRuleset,
+}
+
+/// User interaction preferences applied only after static policy evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PermissionInteractionConfig {
+    pub auto_approve_ask: bool,
+}
+
+/// Root configuration contract for the `tool_permissions` config section.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ToolPermissionConfig {
+    pub policy: PermissionPolicyConfig,
+    pub interaction: PermissionInteractionConfig,
+}
+
+/// Ordered inputs used to resolve one effective static permission ruleset.
+///
+/// Product defaults are the initial baseline. The user preset and global
+/// rules follow, then project and agent overrides. Enforced rules remain last
+/// so user-level full access cannot loosen product or organization limits.
+#[derive(Debug, Clone, Copy)]
+pub struct PermissionPolicyLayers<'a> {
+    pub product_defaults: &'a [PermissionRule],
+    pub global: &'a PermissionPolicyConfig,
+    pub project: &'a [PermissionRule],
+    pub agent: &'a [PermissionRule],
+    pub enforced: &'a [PermissionRule],
+}
+
+/// Expands the configured preset and merges every static rule layer in its
+/// security-significant evaluation order.
+pub fn resolve_permission_policy(layers: PermissionPolicyLayers<'_>) -> PermissionRuleset {
+    let baseline = layers.global.preset.baseline_rule();
+    merge_permission_rule_layers(&[
+        layers.product_defaults,
+        std::slice::from_ref(&baseline),
+        &layers.global.rules,
+        layers.project,
+        layers.agent,
+        layers.enforced,
+    ])
+}
+
 /// Identifies the boundary that originated a permission request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

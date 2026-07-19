@@ -1,13 +1,132 @@
 use bitfun_product_domains::tool_permissions::{
-    merge_permission_rule_layers, wildcard_matches, PermissionEffect, PermissionEvaluator,
+    merge_permission_rule_layers, resolve_permission_policy, wildcard_matches, PermissionEffect,
+    PermissionEvaluator, PermissionPolicyConfig, PermissionPolicyLayers, PermissionPolicyPreset,
     PermissionReply, PermissionRequest, PermissionRequestSource, PermissionRequestSourceKind,
-    PermissionResourceCaseSensitivity, PermissionRule,
+    PermissionResourceCaseSensitivity, PermissionRule, ToolPermissionConfig,
 };
 use serde_json::json;
 use serde_json::Map;
 
 fn rule(action: &str, resource: &str, effect: PermissionEffect) -> PermissionRule {
     PermissionRule::new(action, resource, effect)
+}
+
+fn policy(preset: PermissionPolicyPreset, rules: Vec<PermissionRule>) -> PermissionPolicyConfig {
+    PermissionPolicyConfig { preset, rules }
+}
+
+#[test]
+fn tool_permission_config_defaults_to_ask_with_auto_approve_disabled() {
+    let config = ToolPermissionConfig::default();
+
+    assert_eq!(config.policy.preset, PermissionPolicyPreset::Ask);
+    assert!(config.policy.rules.is_empty());
+    assert!(!config.interaction.auto_approve_ask);
+    assert_eq!(
+        serde_json::to_value(config).expect("serialize tool permission config"),
+        json!({
+            "policy": {
+                "preset": "ask",
+                "rules": [],
+            },
+            "interaction": {
+                "auto_approve_ask": false,
+            },
+        })
+    );
+}
+
+#[test]
+fn policy_presets_expand_into_ordinary_baseline_rules() {
+    let ask = policy(PermissionPolicyPreset::Ask, Vec::new());
+    let full_access = policy(PermissionPolicyPreset::FullAccess, Vec::new());
+    let evaluator = PermissionEvaluator::case_sensitive();
+
+    let ask_rules = resolve_permission_policy(PermissionPolicyLayers {
+        product_defaults: &[],
+        global: &ask,
+        project: &[],
+        agent: &[],
+        enforced: &[],
+    });
+    let full_access_rules = resolve_permission_policy(PermissionPolicyLayers {
+        product_defaults: &[],
+        global: &full_access,
+        project: &[],
+        agent: &[],
+        enforced: &[],
+    });
+
+    assert_eq!(ask_rules, vec![rule("*", "*", PermissionEffect::Ask)]);
+    assert_eq!(
+        full_access_rules,
+        vec![rule("*", "*", PermissionEffect::Allow)]
+    );
+    assert_eq!(
+        evaluator.evaluate_resource("edit", "src/main.rs", &ask_rules),
+        PermissionEffect::Ask
+    );
+    assert_eq!(
+        evaluator.evaluate_resource("edit", "src/main.rs", &full_access_rules),
+        PermissionEffect::Allow
+    );
+}
+
+#[test]
+fn resolved_policy_preserves_layer_order_and_enforced_limits() {
+    let product_defaults = vec![rule("read", "*", PermissionEffect::Allow)];
+    let global = policy(
+        PermissionPolicyPreset::FullAccess,
+        vec![rule("bash", "rm *", PermissionEffect::Ask)],
+    );
+    let project = vec![rule("edit", "generated/*", PermissionEffect::Deny)];
+    let agent = vec![rule("edit", "generated/review.md", PermissionEffect::Allow)];
+    let enforced = vec![rule("edit", "generated/*", PermissionEffect::Deny)];
+
+    let resolved = resolve_permission_policy(PermissionPolicyLayers {
+        product_defaults: &product_defaults,
+        global: &global,
+        project: &project,
+        agent: &agent,
+        enforced: &enforced,
+    });
+
+    assert_eq!(
+        resolved,
+        [
+            product_defaults,
+            vec![rule("*", "*", PermissionEffect::Allow)],
+            global.rules,
+            project,
+            agent,
+            enforced,
+        ]
+        .concat()
+    );
+
+    let evaluator = PermissionEvaluator::case_sensitive();
+    assert_eq!(
+        evaluator.evaluate_resource("bash", "rm -rf target", &resolved),
+        PermissionEffect::Ask
+    );
+    assert_eq!(
+        evaluator.evaluate_resource("edit", "generated/review.md", &resolved),
+        PermissionEffect::Deny
+    );
+    assert_eq!(
+        evaluator.evaluate_resource("webfetch", "https://example.com", &resolved),
+        PermissionEffect::Allow
+    );
+}
+
+#[test]
+fn legacy_skip_confirmation_field_does_not_enable_access_or_auto_approve() {
+    let config: ToolPermissionConfig = serde_json::from_value(json!({
+        "skip_tool_confirmation": true,
+    }))
+    .expect("deserialize legacy-shaped permission config");
+
+    assert_eq!(config, ToolPermissionConfig::default());
 }
 
 #[test]
