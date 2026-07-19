@@ -1,17 +1,26 @@
 .permission-request-panel {
   position: absolute;
   right: 20px;
-  bottom: 20px;
+  bottom: var(--permission-request-panel-bottom, 20px);
   z-index: 25;
   width: min(460px, calc(100% - 40px));
   display: grid;
   gap: 10px;
   padding: 14px;
-  border: 1px solid var(--border-base);
+  border: 1px solid var(--color-warning);
   border-radius: 8px;
   background: var(--color-bg-secondary);
   box-shadow: var(--shadow-lg);
   color: var(--color-text-primary);
+}
+
+.permission-request-panel--above-chat-input {
+  // Match the visible ChatInput card: its 900px drop zone has 8px horizontal
+  // insets on both sides before the card itself begins.
+  right: auto;
+  left: 50%;
+  width: min(884px, calc(100% - 16px));
+  transform: translateX(-50%);
 }
 
 .permission-request-panel__heading {

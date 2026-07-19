@@ -1,8 +1,10 @@
 use bitfun_product_domains::tool_permissions::{
     merge_permission_rule_layers, wildcard_matches, PermissionEffect, PermissionEvaluator,
-    PermissionReply, PermissionResourceCaseSensitivity, PermissionRule,
+    PermissionReply, PermissionRequest, PermissionRequestSource, PermissionRequestSourceKind,
+    PermissionResourceCaseSensitivity, PermissionRule,
 };
 use serde_json::json;
+use serde_json::Map;
 
 fn rule(action: &str, resource: &str, effect: PermissionEffect) -> PermissionRule {
     PermissionRule::new(action, resource, effect)
@@ -47,6 +49,39 @@ fn permission_reply_uses_stable_tagged_wire_values() {
             "feedback": "Use a read-only path",
         })
     );
+}
+
+#[test]
+fn permission_request_call_id_is_optional_and_camel_cased() {
+    let request = PermissionRequest {
+        request_id: "request-1".to_string(),
+        tool_call_id: Some("call-1".to_string()),
+        project_id: "project-1".to_string(),
+        session_id: "session-1".to_string(),
+        agent_id: "agentic".to_string(),
+        action: "read".to_string(),
+        resources: vec!["README.md".to_string()],
+        save_resources: Vec::new(),
+        source: PermissionRequestSource {
+            kind: PermissionRequestSourceKind::ToolCall,
+            identity: "Read".to_string(),
+        },
+        display_metadata: Map::new(),
+    };
+    let value = serde_json::to_value(&request).expect("serialize permission request");
+    assert_eq!(value["toolCallId"], "call-1");
+
+    let legacy = json!({
+        "requestId": "request-legacy",
+        "projectId": "project-1",
+        "sessionId": "session-1",
+        "agentId": "agentic",
+        "action": "read",
+        "resources": ["README.md"],
+        "source": { "kind": "tool_call", "identity": "Read" },
+    });
+    let decoded: PermissionRequest = serde_json::from_value(legacy).expect("decode legacy request");
+    assert_eq!(decoded.tool_call_id, None);
 }
 
 #[test]

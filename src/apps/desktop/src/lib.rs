@@ -1494,16 +1494,22 @@ async fn init_agentic_system() -> anyhow::Result<(
 
     let tool_registry = tools::registry::get_global_tool_registry();
     let tool_state_manager = Arc::new(tools::pipeline::ToolStateManager::new(event_queue.clone()));
+    let permission_request_manager =
+        bitfun_core::product_runtime::core_permission_request_manager()
+            .map_err(anyhow::Error::msg)?;
 
     let computer_use_host: ComputerUseHostRef =
         Arc::new(computer_use::DesktopComputerUseHost::new());
     set_computer_use_desktop_available(true);
 
-    let tool_pipeline = Arc::new(tools::pipeline::ToolPipeline::new(
-        tool_registry,
-        tool_state_manager,
-        Some(computer_use_host),
-    ));
+    let tool_pipeline = Arc::new(
+        tools::pipeline::ToolPipeline::new(
+            tool_registry,
+            tool_state_manager,
+            Some(computer_use_host),
+        )
+        .with_permission_request_manager(permission_request_manager),
+    );
 
     let stream_processor = Arc::new(execution::StreamProcessor::new(event_queue.clone()));
     let round_executor = Arc::new(execution::RoundExecutor::new(

@@ -91,6 +91,8 @@ export interface PermissionRequestSource {
 
 export interface PermissionV2Request {
   requestId: string;
+  /** Provider/tool-stream call ID for correlating one concrete tool card. */
+  toolCallId?: string;
   projectId: string;
   sessionId: string;
   agentId: string;

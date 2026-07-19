@@ -80,6 +80,7 @@ import { usePermissionRequests } from './usePermissionRequests';
 interface ModernFlowChatContainerProps {
   className?: string;
   config?: Partial<FlowChatConfig>;
+  permissionPanelAboveChatInput?: boolean;
 
   // Callbacks compatible with the legacy version.
   onFileViewRequest?: (filePath: string, fileName: string, lineRange?: LineRange) => void;
@@ -218,6 +219,7 @@ function backgroundCommandSummaryFromActivity(activity: BackgroundCommandActivit
 export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = ({
   className = '',
   config,
+  permissionPanelAboveChatInput = false,
   onFileViewRequest,
   onTabOpen,
   onOpenVisualization,
@@ -394,6 +396,11 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
     onSwitchToChatPanel,
     onToolConfirm: handleToolConfirm,
     onToolReject: handleToolReject,
+    pendingPermissionToolCallIds: new Set(
+      permissionRequests
+        .map((request) => request.toolCallId)
+        .filter((toolCallId): toolCallId is string => Boolean(toolCallId)),
+    ),
     sessionId: activeSession?.sessionId,
     activeSessionOverride: activeSession,
     allowUserMessageRollback,
@@ -422,6 +429,7 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
     onSwitchToChatPanel,
     handleToolConfirm,
     handleToolReject,
+    permissionRequests,
     activeSession,
     allowUserMessageRollback,
     config,
@@ -1484,6 +1492,7 @@ export const ModernFlowChatContainer: React.FC<ModernFlowChatContainerProps> = (
         {permissionRequests[0] && (
           <PermissionRequestPanel
             request={permissionRequests[0]}
+            aboveChatInput={permissionPanelAboveChatInput}
             onRespond={(reply, feedback) =>
               respondPermission(permissionRequests[0].requestId, reply, feedback)
             }

@@ -66,6 +66,14 @@ pub struct PermissionRequestSource {
 #[serde(rename_all = "camelCase")]
 pub struct PermissionRequest {
     pub request_id: String,
+    /// Provider/tool-stream call ID used to correlate this request with one
+    /// concrete tool invocation in interactive surfaces.
+    ///
+    /// This is deliberately separate from `request_id`: one tool invocation
+    /// may produce more than one permission request, while some providers or
+    /// extensions may not expose a call ID at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
     pub project_id: String,
     pub session_id: String,
     pub agent_id: String,

@@ -608,6 +608,7 @@ impl ToolPipeline {
             let pending = manager
                 .register(PermissionV2Request {
                     request_id: request_id.clone(),
+                    tool_call_id: Some(task.tool_call.tool_id.clone()),
                     project_id: project_id.clone(),
                     session_id: task.context.session_id.clone(),
                     agent_id: task.context.agent_type.clone(),
@@ -2385,6 +2386,7 @@ mod tests {
                 .await
         });
         let request = wait_for_permission_request(&manager).await;
+        assert_eq!(request.tool_call_id.as_deref(), Some("once"));
         manager
             .reply(
                 &request.request_id,

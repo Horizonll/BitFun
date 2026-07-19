@@ -438,6 +438,7 @@ mod tests {
     fn request() -> PermissionV2Request {
         PermissionV2Request {
             request_id: "request-1".to_string(),
+            tool_call_id: None,
             project_id: "project-1".to_string(),
             session_id: "session-1".to_string(),
             agent_id: "agentic".to_string(),

@@ -142,6 +142,7 @@ impl ClockPort for FixedClock {
 fn request(request_id: &str, session_id: &str) -> PermissionV2Request {
     PermissionV2Request {
         request_id: request_id.to_string(),
+        tool_call_id: None,
         project_id: "project-a".to_string(),
         session_id: session_id.to_string(),
         agent_id: "agentic".to_string(),

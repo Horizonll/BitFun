@@ -146,6 +146,7 @@ const ChatPaneInner: React.FC<ChatPaneProps> = ({
     >
       <FlowChatContainer
         className="bitfun-chat-pane__chat-container"
+        permissionPanelAboveChatInput={showChatInput}
         onOpenVisualization={(type, data) => {
           log.info('Opening visualization', { type, data });
         }}
