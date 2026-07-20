@@ -294,23 +294,10 @@ impl PermissionRequestManager {
         let timestamp_ms = self.clock.now_unix_millis();
         let grants = grants_for_reply(&request, &reply, timestamp_ms);
 
-        let resolutions = if matches!(reply, PermissionReply::Reject { .. }) {
-            self.ordered_pending_requests(|pending| {
-                pending.request.session_id == request.session_id
-            })
-            .into_iter()
-            .map(|pending_request| {
-                let pending_reply = if pending_request.request_id == request_id {
-                    reply.clone()
-                } else {
-                    PermissionReply::Reject { feedback: None }
-                };
-                (pending_request, pending_reply)
-            })
-            .collect::<Vec<_>>()
-        } else {
-            vec![(request.clone(), reply.clone())]
-        };
+        // A rejection is scoped to the request the user explicitly answered.
+        // Other pending requests may belong to independent tool calls in the
+        // same round and must remain available for their own decisions.
+        let resolutions = vec![(request.clone(), reply.clone())];
 
         let audit = resolutions
             .iter()

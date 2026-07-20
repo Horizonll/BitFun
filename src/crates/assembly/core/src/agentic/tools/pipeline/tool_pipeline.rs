@@ -1874,6 +1874,12 @@ mod tests {
             "Write"
         }
 
+        fn is_readonly(&self) -> bool {
+            // Keep the test tool eligible for the parallel batch scheduler
+            // while its explicit permission intent still exercises V2 asks.
+            true
+        }
+
         async fn description(&self) -> BitFunResult<String> {
             Ok("V2 file permission test tool".to_string())
         }
@@ -2363,6 +2369,20 @@ mod tests {
         panic!("permission request was not registered");
     }
 
+    async fn wait_for_permission_request_count(
+        manager: &PermissionRequestManager,
+        expected: usize,
+    ) -> Vec<bitfun_runtime_ports::PermissionV2Request> {
+        for _ in 0..100 {
+            let requests = manager.pending_requests();
+            if requests.len() >= expected {
+                return requests;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        panic!("expected {expected} permission requests to be registered");
+    }
+
     #[tokio::test]
     async fn v2_allow_and_deny_are_enforced_before_tool_side_effects() {
         let pipeline = test_tool_pipeline();
@@ -2417,6 +2437,83 @@ mod tests {
             Some(ToolExecutionState::Rejected { .. })
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn v2_rejecting_one_parallel_tool_does_not_reject_sibling() {
+        let store = Arc::new(MemoryPermissionStore::default());
+        let manager = permission_test_manager(Arc::clone(&store));
+        let pipeline = test_tool_pipeline().with_permission_request_manager(Arc::clone(&manager));
+        let calls = Arc::new(AtomicUsize::new(0));
+        register_v2_file_test_tool(
+            &pipeline,
+            vec![PermissionIntent::new(
+                "edit",
+                vec!["src/main.rs".to_string()],
+            )],
+            Arc::clone(&calls),
+        )
+        .await;
+
+        let running_pipeline = pipeline.clone();
+        let execution = tokio::spawn(async move {
+            running_pipeline
+                .execute_tools(
+                    vec![
+                        test_tool_call("reject-me", "Write"),
+                        test_tool_call("keep-going", "Write"),
+                    ],
+                    permission_test_context(),
+                    ToolExecutionOptions::default(),
+                )
+                .await
+        });
+
+        let requests = wait_for_permission_request_count(&manager, 2).await;
+        assert_eq!(requests.len(), 2);
+        let rejected_request = requests
+            .iter()
+            .find(|request| request.tool_call_id.as_deref() == Some("reject-me"))
+            .expect("rejected tool permission request");
+        let sibling_request = requests
+            .iter()
+            .find(|request| request.tool_call_id.as_deref() == Some("keep-going"))
+            .expect("sibling tool permission request");
+
+        manager
+            .reply(
+                &rejected_request.request_id,
+                PermissionReply::Reject { feedback: None },
+                bitfun_runtime_ports::PermissionReplySource::User,
+            )
+            .await
+            .expect("reject one tool");
+        assert_eq!(
+            manager
+                .pending_requests()
+                .iter()
+                .map(|request| request.request_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![sibling_request.request_id.as_str()]
+        );
+
+        manager
+            .reply(
+                &sibling_request.request_id,
+                PermissionReply::Once,
+                bitfun_runtime_ports::PermissionReplySource::User,
+            )
+            .await
+            .expect("allow sibling tool");
+
+        let results = execution
+            .await
+            .expect("parallel tool execution join")
+            .expect("parallel tool execution");
+        assert_eq!(results.len(), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(results[0].result.result["category"], "user_rejected");
+        assert!(!results[1].result.is_error);
     }
 
     #[tokio::test]

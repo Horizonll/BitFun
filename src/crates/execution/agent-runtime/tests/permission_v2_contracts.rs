@@ -250,7 +250,7 @@ async fn always_persists_unique_project_grants_without_releasing_other_pending_r
 }
 
 #[tokio::test]
-async fn reject_clears_every_pending_request_in_the_same_session_only() {
+async fn reject_releases_only_the_selected_request() {
     let (manager, _) = manager();
     let target = manager
         .register(request("request-1", "session-a"))
@@ -271,18 +271,25 @@ async fn reject_clears_every_pending_request_in_the_same_session_only() {
     let resolution = manager
         .reply("request-1", reply.clone(), PermissionReplySource::User)
         .await
-        .expect("reject session");
+        .expect("reject request");
 
     assert_eq!(target.wait().await, PermissionWaitOutcome::Replied(reply));
+    assert_eq!(resolution.resolved_request_ids, vec!["request-1"]);
     assert_eq!(
-        sibling.wait().await,
-        PermissionWaitOutcome::Replied(PermissionReply::Reject { feedback: None })
+        manager
+            .pending_requests()
+            .iter()
+            .map(|request| request.request_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["request-2", "request-3"]
     );
-    assert_eq!(
-        resolution.resolved_request_ids,
-        vec!["request-1", "request-2"]
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), sibling.wait())
+            .await
+            .is_err(),
+        "a sibling request must keep waiting after the target is rejected"
     );
-    assert_eq!(manager.pending_requests().len(), 1);
 
     manager
         .cancel_session("session-b", "disconnected")
@@ -294,6 +301,10 @@ async fn reject_clears_every_pending_request_in_the_same_session_only() {
             reason: "disconnected".to_string()
         }
     );
+    manager
+        .cancel_session("session-a", "test cleanup")
+        .await
+        .expect("cancel sibling request");
 }
 
 #[tokio::test]
