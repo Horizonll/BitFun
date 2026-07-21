@@ -35,7 +35,13 @@ import {
 } from '../services/PermissionConfigService';
 import { systemAPI } from '@/infrastructure/api/service-api/SystemAPI';
 import { useNotification, notificationService } from '@/shared/notification-system';
-import type { AIModelConfig, DebugModeConfig, LanguageDebugTemplate, ToolPermissionConfig } from '../types';
+import type {
+  AIModelConfig,
+  DebugModeConfig,
+  LanguageDebugTemplate,
+  PermissionRule,
+  ToolPermissionConfig,
+} from '../types';
 import {
   LANGUAGE_TEMPLATE_LABELS,
   DEFAULT_DEBUG_MODE_CONFIG,
@@ -43,6 +49,7 @@ import {
   DEFAULT_LANGUAGE_TEMPLATES,
 } from '../types';
 import { ModelSelectionRadio } from './ModelSelectionRadio';
+import { GlobalPermissionRulesDialog } from './GlobalPermissionRulesDialog';
 import { ChatInputPixelPet } from '@/flow_chat/components/ChatInputPixelPet';
 import { ask, open } from '@tauri-apps/plugin-dialog';
 import { createLogger } from '@/shared/utils/logger';
@@ -120,6 +127,7 @@ const SessionSettingsPanels: React.FC<SessionSettingsPanelsProps> = ({ variant }
   const [deferredToolLoadingConfigSaving, setDeferredToolLoadingConfigSaving] = useState(false);
   const [toolPermissionConfig, setToolPermissionConfig] = useState<ToolPermissionConfig>(DEFAULT_TOOL_PERMISSION_CONFIG);
   const [permissionConfigSaving, setPermissionConfigSaving] = useState(false);
+  const [isGlobalPermissionRulesDialogOpen, setIsGlobalPermissionRulesDialogOpen] = useState(false);
 
   const [computerUseEnabled, setComputerUseEnabled] = useState(false);
   const [computerUseAccess, setComputerUseAccess] = useState(false);
@@ -264,16 +272,21 @@ const SessionSettingsPanels: React.FC<SessionSettingsPanelsProps> = ({ variant }
     }
   }, [refreshDesktopStatus]);
 
-  const saveToolPermissionConfig = async (nextConfig: ToolPermissionConfig, previousConfig: ToolPermissionConfig) => {
+  const saveToolPermissionConfig = async (
+    nextConfig: ToolPermissionConfig,
+    previousConfig: ToolPermissionConfig,
+  ): Promise<boolean> => {
     setToolPermissionConfig(nextConfig);
     setPermissionConfigSaving(true);
     try {
       await permissionConfigService.saveConfig(nextConfig);
       notificationService.success(t('messages.saveSuccess'), { duration: 2000 });
+      return true;
     } catch (error) {
       log.error('Failed to save tool permission config', error);
       setToolPermissionConfig(previousConfig);
       notificationService.error(t('messages.saveFailed'));
+      return false;
     } finally {
       setPermissionConfigSaving(false);
     }
@@ -304,6 +317,14 @@ const SessionSettingsPanels: React.FC<SessionSettingsPanelsProps> = ({ variant }
     const previousConfig = toolPermissionConfig;
     await saveToolPermissionConfig(
       { ...previousConfig, interaction: { ...previousConfig.interaction, auto_approve_ask: enabled } },
+      previousConfig,
+    );
+  };
+
+  const handleSaveGlobalPermissionRules = async (rules: PermissionRule[]): Promise<boolean> => {
+    const previousConfig = toolPermissionConfig;
+    return saveToolPermissionConfig(
+      { ...previousConfig, policy: { ...previousConfig.policy, rules } },
       previousConfig,
     );
   };
@@ -1159,7 +1180,32 @@ const SessionSettingsPanels: React.FC<SessionSettingsPanelsProps> = ({ variant }
               />
             </div>
           </ConfigPageRow>
+          <ConfigPageRow
+            label={t('permissionPolicy.globalRules')}
+            description={t('permissionPolicy.globalRulesDescription')}
+            align="center"
+          >
+            <div className="bitfun-func-agent-config__row-control">
+              <Button
+                type="button"
+                size="small"
+                variant="secondary"
+                disabled={permissionConfigSaving}
+                onClick={() => setIsGlobalPermissionRulesDialogOpen(true)}
+              >
+                {t('permissionPolicy.manageGlobalRules')}
+              </Button>
+            </div>
+          </ConfigPageRow>
         </ConfigPageSection>
+
+        <GlobalPermissionRulesDialog
+          isOpen={isGlobalPermissionRulesDialogOpen}
+          rules={toolPermissionConfig.policy.rules}
+          isSaving={permissionConfigSaving}
+          onSave={handleSaveGlobalPermissionRules}
+          onClose={() => setIsGlobalPermissionRulesDialogOpen(false)}
+        />
 
         {/* ── Tool execution behavior ────────────────────────────── */}
         <ConfigPageSection

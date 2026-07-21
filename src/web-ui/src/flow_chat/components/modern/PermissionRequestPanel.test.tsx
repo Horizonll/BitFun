@@ -8,6 +8,22 @@ import { PermissionRequestPanel } from './PermissionRequestPanel';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+const TRANSLATIONS: Record<string, string> = {
+  'permission.actions.read': 'Read files',
+  'permission.actions.edit': 'Edit files',
+  'permission.actions.bash': 'Run command',
+  'permission.actions.git': 'Git action',
+  'permission.actions.computerUse': 'Control device',
+  'permission.actions.webSearch': 'Search web',
+  'permission.actions.webFetch': 'Access web',
+  'permission.actions.mcp': 'MCP tool',
+  'permission.actions.task': 'Run task',
+  'permission.actions.skill': 'Run skill',
+  'permission.actions.customTool': 'External tool',
+  'permission.actions.externalDirectory': 'Access external directory',
+  'permission.actions.other': 'Other action',
+};
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, values?: Record<string, string>) => {
@@ -17,13 +33,7 @@ vi.mock('react-i18next', () => ({
       if (key === 'permission.allowAlwaysTooltip') {
         return `Always allow saves matching access for ${values?.projectPath}`;
       }
-      if (key === 'permission.actions.edit') {
-        return 'Edit files';
-      }
-      if (key === 'permission.actions.bash') {
-        return 'Run command';
-      }
-      return key;
+      return TRANSLATIONS[key] ?? key;
     },
   }),
 }));
@@ -137,6 +147,42 @@ describe('PermissionRequestPanel', () => {
     expect(resourceSummary?.parentElement?.getAttribute('data-tooltip'))
       .toBe(`${longResource}, pnpm run type-check:web`);
     expect(container.textContent).toContain('Run command');
+  });
+
+  it('uses friendly labels for every recognized permission action', () => {
+    const expectedActions = [
+      ['read', 'Read files'],
+      ['edit', 'Edit files'],
+      ['bash', 'Run command'],
+      ['git', 'Git action'],
+      ['computer_use', 'Control device'],
+      ['websearch', 'Search web'],
+      ['webfetch', 'Access web'],
+      ['mcp', 'MCP tool'],
+      ['task', 'Run task'],
+      ['skill', 'Run skill'],
+      ['custom_tool', 'External tool'],
+      ['external_directory', 'Access external directory'],
+      ['future_action', 'Other action'],
+    ] as const;
+
+    act(() => {
+      root.render(
+        <PermissionRequestPanel
+          requests={expectedActions.map(([action], index) => ({
+            ...request(false),
+            requestId: `request-${index}`,
+            action,
+          }))}
+          onRespond={vi.fn()}
+          onRespondBatch={vi.fn()}
+        />,
+      );
+    });
+
+    expect([...container.querySelectorAll('.permission-request-panel__action')]
+      .map((element) => element.textContent))
+      .toEqual(expectedActions.map(([, label]) => label));
   });
 
   it('shows one ordered batch and responds to the current and following requests once', async () => {

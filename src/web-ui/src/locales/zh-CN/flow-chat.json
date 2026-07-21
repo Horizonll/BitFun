@@ -26,7 +26,7 @@
       "task": "运行任务",
       "skill": "运行技能",
       "customTool": "外部工具",
-      "external": "外部访问",
+      "externalDirectory": "访问外部目录",
       "other": "其他操作"
     },
     "allowCurrentAndFollowing": "允许全部",

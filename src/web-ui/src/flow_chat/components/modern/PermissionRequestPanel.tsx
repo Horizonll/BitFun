@@ -19,39 +19,23 @@ interface PermissionRequestPanelProps {
   aboveChatInput?: boolean;
 }
 
-function permissionActionLabel(
-  action: string,
-  t: (key: string) => string,
-): string {
-  switch (action) {
-    case 'read':
-      return t('permission.actions.read');
-    case 'edit':
-      return t('permission.actions.edit');
-    case 'bash':
-      return t('permission.actions.bash');
-    case 'git':
-      return t('permission.actions.git');
-    case 'computer_use':
-      return t('permission.actions.computerUse');
-    case 'websearch':
-      return t('permission.actions.webSearch');
-    case 'webfetch':
-      return t('permission.actions.webFetch');
-    case 'mcp':
-      return t('permission.actions.mcp');
-    case 'task':
-      return t('permission.actions.task');
-    case 'skill':
-      return t('permission.actions.skill');
-    case 'custom_tool':
-      return t('permission.actions.customTool');
-    case 'external':
-    case 'network':
-      return t('permission.actions.external');
-    default:
-      return t('permission.actions.other');
-  }
+const PERMISSION_ACTION_LABEL_KEYS: Record<string, string> = {
+  read: 'permission.actions.read',
+  edit: 'permission.actions.edit',
+  bash: 'permission.actions.bash',
+  git: 'permission.actions.git',
+  computer_use: 'permission.actions.computerUse',
+  websearch: 'permission.actions.webSearch',
+  webfetch: 'permission.actions.webFetch',
+  mcp: 'permission.actions.mcp',
+  task: 'permission.actions.task',
+  skill: 'permission.actions.skill',
+  custom_tool: 'permission.actions.customTool',
+  external_directory: 'permission.actions.externalDirectory',
+};
+
+function permissionActionLabel(action: string, t: (key: string) => string): string {
+  return t(PERMISSION_ACTION_LABEL_KEYS[action] ?? 'permission.actions.other');
 }
 
 export function PermissionRequestPanel({

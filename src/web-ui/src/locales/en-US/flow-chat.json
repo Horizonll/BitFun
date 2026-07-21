@@ -26,7 +26,7 @@
       "task": "Run task",
       "skill": "Run skill",
       "customTool": "External tool",
-      "external": "External access",
+      "externalDirectory": "Access external directory",
       "other": "Other action"
     },
     "allowCurrentAndFollowing": "Allow all",

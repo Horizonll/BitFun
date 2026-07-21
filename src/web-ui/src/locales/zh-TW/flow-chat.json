@@ -26,7 +26,7 @@
       "task": "執行任務",
       "skill": "執行技能",
       "customTool": "外部工具",
-      "external": "外部存取",
+      "externalDirectory": "存取外部目錄",
       "other": "其他操作"
     },
     "allowCurrentAndFollowing": "允許全部",
