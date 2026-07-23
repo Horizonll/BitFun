@@ -63,6 +63,15 @@ export function isDelegatedIdentityChangedError(
   return value instanceof DelegatedIdentityChangedError;
 }
 
+const RELAY_HTTP_MAX_ATTEMPTS = 5;
+const RELAY_HTTP_RETRY_BASE_DELAY_MS = 300;
+const RELAY_HTTP_RETRY_BUDGET_MS = 120_000;
+const TRANSIENT_RELAY_STATUSES = new Set([408, 425, 500, 502, 503, 504]);
+
+type RelayRequestOptions = {
+  retryable?: boolean;
+};
+
 function equalBytesConstantTime(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
   let difference = 0;
@@ -121,7 +130,16 @@ export class RelayHttpClient {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await fetch(input, { ...init, signal: controller.signal });
+      const response = await fetch(input, { ...init, signal: controller.signal });
+      // Keep the deadline active until the full body has been received.
+      // `fetch()` resolves after response headers, so returning that Response
+      // directly would let a stalled body wait forever outside the timeout.
+      const body = await response.arrayBuffer();
+      return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
     } catch (error: unknown) {
       if ((error as { name?: string })?.name === 'AbortError') {
         throw new Error('Request timed out');
@@ -130,6 +148,46 @@ export class RelayHttpClient {
     } finally {
       window.clearTimeout(timer);
     }
+  }
+
+  private async fetchWithRetry(
+    input: RequestInfo | URL,
+    init: RequestInit,
+    timeoutMs: number,
+  ): Promise<Response> {
+    let lastError: unknown = null;
+    const deadlineMs = Date.now() + RELAY_HTTP_RETRY_BUDGET_MS;
+    for (let attempt = 1; attempt <= RELAY_HTTP_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const remainingMs = deadlineMs - Date.now();
+        if (remainingMs <= 0) {
+          throw lastError ?? new Error('Relay request retry budget exceeded');
+        }
+        const response = await this.fetchWithTimeout(
+          input,
+          init,
+          Math.min(timeoutMs, remainingMs),
+        );
+        if (
+          TRANSIENT_RELAY_STATUSES.has(response.status)
+          && attempt < RELAY_HTTP_MAX_ATTEMPTS
+        ) {
+          lastError = new Error(`Relay returned HTTP ${response.status}`);
+          void response.body?.cancel();
+        } else {
+          return response;
+        }
+      } catch (error) {
+        lastError = error;
+        if (attempt === RELAY_HTTP_MAX_ATTEMPTS) throw error;
+      }
+      const delayMs = RELAY_HTTP_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
+      if (Date.now() + delayMs >= deadlineMs) {
+        throw lastError ?? new Error('Relay request retry budget exceeded');
+      }
+      await new Promise(resolve => window.setTimeout(resolve, delayMs));
+    }
+    throw lastError;
   }
 
   /**
@@ -163,7 +221,7 @@ export class RelayHttpClient {
       : undefined;
 
     // Step 1: POST /pair → encrypted challenge
-    const pairResp = await this.fetchWithTimeout(
+    const pairResp = await this.fetchWithRetry(
       `${this.relayUrl}/api/rooms/${encodeURIComponent(this.roomId)}/pair`,
       {
         method: 'POST',
@@ -258,7 +316,7 @@ export class RelayHttpClient {
         user_id?: string;
         device_id?: string;
         message?: string;
-      }>({ cmd: 'get_delegated_identity' });
+      }>({ cmd: 'get_delegated_identity' }, { retryable: true });
       if (this.delegatedIdentityRequestEpoch !== requestGeneration) return false;
       if (resp?.resp === 'delegate_identity' && resp.token && resp.master_key) {
         const homeDeviceId = resp.device_id ?? null;
@@ -395,7 +453,10 @@ export class RelayHttpClient {
   /**
    * Send an encrypted command to the desktop and return the decrypted response.
    */
-  async sendCommand<T = any>(cmd: object): Promise<T> {
+  async sendCommand<T = any>(
+    cmd: object,
+    options: RelayRequestOptions = {},
+  ): Promise<T> {
     if (!this.sharedKey) throw new Error('Not paired');
 
     const plaintext = JSON.stringify(cmd);
@@ -406,14 +467,15 @@ export class RelayHttpClient {
 
     const body = JSON.stringify({ encrypted_data: encData, nonce: encNonce });
 
-    const resp = await this.fetchWithTimeout(
+    const resp = await (options.retryable ? this.fetchWithRetry : this.fetchWithTimeout).call(
+      this,
       `${this.relayUrl}/api/rooms/${encodeURIComponent(this.roomId)}/command`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
       },
-      65_000,
+      options.retryable ? 20_000 : 65_000,
     );
 
     if (!resp.ok) {
@@ -548,7 +610,7 @@ export class RelayHttpClient {
    */
   async listDevices(): Promise<Array<{ device_id: string; device_name: string; online: boolean }>> {
     return this.withDelegatedAuthRetry(async (identity) => {
-      const resp = await this.fetchWithTimeout(`${this.relayUrl}/api/devices`, {
+      const resp = await this.fetchWithRetry(`${this.relayUrl}/api/devices`, {
         headers: { 'Authorization': `Bearer ${identity.token}` },
       }, 20_000);
       if (!resp.ok) {
@@ -568,7 +630,11 @@ export class RelayHttpClient {
    * desktop uses, shared via the room channel at pairing time).
    * On HTTP 401, refreshes identity from the paired desktop and retries once.
    */
-  async sendDeviceRpc<T = any>(targetDeviceId: string, command: object): Promise<T> {
+  async sendDeviceRpc<T = any>(
+    targetDeviceId: string,
+    command: object,
+    options: RelayRequestOptions = {},
+  ): Promise<T> {
     return this.withDelegatedAuthRetry(async (identity) => {
       const plaintext = JSON.stringify(command);
       const { data: encData, nonce: encNonce } = await encrypt(
@@ -576,7 +642,8 @@ export class RelayHttpClient {
         plaintext,
       );
 
-      const resp = await this.fetchWithTimeout(
+      const resp = await (options.retryable ? this.fetchWithRetry : this.fetchWithTimeout).call(
+        this,
         `${this.relayUrl}/api/devices/${encodeURIComponent(targetDeviceId)}/rpc`,
         {
           method: 'POST',
@@ -586,7 +653,7 @@ export class RelayHttpClient {
           },
           body: JSON.stringify({ encrypted_data: encData, nonce: encNonce }),
         },
-        130_000,
+        options.retryable ? 20_000 : 130_000,
       );
 
       if (!resp.ok) {

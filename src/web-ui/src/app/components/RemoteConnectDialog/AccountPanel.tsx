@@ -30,7 +30,11 @@ import {
 } from 'lucide-react';
 import { useSceneStore } from '@/app/stores/sceneStore';
 import { remoteConnectAPI } from '@/infrastructure/api/service-api/RemoteConnectAPI';
-import type { AccountHint, AccountDeviceInfo } from '@/infrastructure/api/service-api/RemoteConnectAPI';
+import type {
+  AccountHint,
+  AccountDeviceInfo,
+  OnlineDeviceInfo,
+} from '@/infrastructure/api/service-api/RemoteConnectAPI';
 import { RelayDeployWizard } from '@/features/relay-deploy';
 import type { RelayDeployResult } from '@/features/relay-deploy';
 import { configAPI } from '@/infrastructure/api/service-api/ConfigAPI';
@@ -39,7 +43,10 @@ import { api } from '@/infrastructure/api/service-api/ApiClient';
 import { usePeerDeviceMode } from '@/infrastructure/peer-device/peerDeviceContextState';
 import { useAccountSyncStore, ensureAccountSyncProgressListener } from '@/infrastructure/account/accountSyncStore';
 import type { AccountSyncPhase } from '@/infrastructure/account/accountSyncStore';
-import { isAccountAuthFailure } from '@/infrastructure/account/accountErrorUtils';
+import {
+  isAccountAuthFailure,
+  isRelayUnreachable,
+} from '@/infrastructure/account/accountErrorUtils';
 import { useNotification } from '@/shared/notification-system';
 import { copyTextToClipboard } from '@/shared/utils/textSelection';
 import { createLogger } from '@/shared/utils/logger';
@@ -48,6 +55,38 @@ import './AccountPanel.scss';
 const log = createLogger('AccountPanel');
 
 const DEVICE_POLL_FALLBACK_MS = 30_000;
+const DEVICE_CONNECT_MAX_ATTEMPTS = 5;
+const DEVICE_CONNECT_RECOVERY_INTERVAL_MS = 30_000;
+const DEVICE_LIST_FAILURE_THRESHOLD = 3;
+const ACCOUNT_TRANSITION_MAX_ATTEMPTS = 4;
+
+async function connectDevicesWithRetry(
+  isCurrent: () => boolean,
+): Promise<OnlineDeviceInfo[]> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= DEVICE_CONNECT_MAX_ATTEMPTS; attempt += 1) {
+    if (!isCurrent()) {
+      throw new Error('account context changed');
+    }
+    try {
+      return await remoteConnectAPI.accountConnectDevices();
+    } catch (error) {
+      lastError = error;
+      if (isAccountAuthFailure(error)
+        || !isRelayUnreachable(error)
+        || attempt === DEVICE_CONNECT_MAX_ATTEMPTS) {
+        throw error;
+      }
+      const delayMs = 500 * (2 ** (attempt - 1));
+      log.warn(
+        `Device connection attempt ${attempt}/${DEVICE_CONNECT_MAX_ATTEMPTS} failed; retrying`,
+        error,
+      );
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
+}
 
 function parseRelayServer(value: string): URL | null {
   try {
@@ -67,12 +106,40 @@ function parseRelayServer(value: string): URL | null {
 }
 
 async function cancelPendingLoginWithRetry(pendingLoginId: string): Promise<boolean> {
-  try {
-    return await remoteConnectAPI.accountCancelPendingLogin(pendingLoginId);
-  } catch (firstError) {
-    log.warn('pending login cancel response was ambiguous; retrying', firstError);
-    return await remoteConnectAPI.accountCancelPendingLogin(pendingLoginId);
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= ACCOUNT_TRANSITION_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await remoteConnectAPI.accountCancelPendingLogin(pendingLoginId);
+    } catch (error) {
+      lastError = error;
+      if (attempt === ACCOUNT_TRANSITION_MAX_ATTEMPTS) break;
+      log.warn(
+        `Pending login cancel attempt ${attempt}/${ACCOUNT_TRANSITION_MAX_ATTEMPTS} was ambiguous; retrying`,
+        error,
+      );
+      await new Promise(resolve => setTimeout(resolve, 250 * (2 ** (attempt - 1))));
+    }
   }
+  throw lastError;
+}
+
+async function finalizePendingLoginWithRetry(pendingLoginId: string): Promise<void> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= ACCOUNT_TRANSITION_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await remoteConnectAPI.accountFinalizeLogin(pendingLoginId);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt === ACCOUNT_TRANSITION_MAX_ATTEMPTS) break;
+      log.warn(
+        `Pending login finalize attempt ${attempt}/${ACCOUNT_TRANSITION_MAX_ATTEMPTS} was ambiguous; retrying`,
+        error,
+      );
+      await new Promise(resolve => setTimeout(resolve, 250 * (2 ** (attempt - 1))));
+    }
+  }
+  throw lastError;
 }
 
 /** Quota / payload-limit failures will not succeed on blind retry. */
@@ -172,7 +239,7 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
 
   const [devices, setDevices] = useState<AccountDeviceInfo[]>([]);
   const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
-  /** Only true after a successful list_devices response; gates the empty-state copy. */
+  /** True after either device presence or a list_devices response is available. */
   const [devicesReady, setDevicesReady] = useState(false);
   const [relayError, setRelayError] = useState<string | null>(null);
   /** Relay URL of the current account session, shown in the devices view. */
@@ -185,6 +252,13 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
   const mountedRef = useRef(false);
   const accountEpochRef = useRef(0);
   const refreshRequestRef = useRef(0);
+  /** Allow at most one list_devices request per account epoch. */
+  const refreshInFlightRef = useRef<{ epoch: number; requestId: number } | null>(null);
+  /** A working device-routing WS is independent evidence that Relay is reachable. */
+  const deviceRoutingReadyRef = useRef(false);
+  const deviceListFailureCountRef = useRef(0);
+  /** Coalesce manual and background recovery so they never replace each other's WS. */
+  const deviceReconnectInFlightRef = useRef(false);
   /** Prevent overlapping background syncs from rapid clicks. */
   const syncInFlightRef = useRef(false);
   /** Opaque backend owner ID for the memory-only overwrite decision. */
@@ -196,6 +270,9 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
   const invalidateAccountRequests = useCallback(() => {
     accountEpochRef.current += 1;
     refreshRequestRef.current += 1;
+    refreshInFlightRef.current = null;
+    deviceRoutingReadyRef.current = false;
+    deviceListFailureCountRef.current = 0;
     setActiveAccountEpoch(null);
     return accountEpochRef.current;
   }, []);
@@ -220,6 +297,9 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
     setRelayError(null);
     setAccountRelayUrl('');
     setCopiedServerUrl(false);
+    refreshInFlightRef.current = null;
+    deviceRoutingReadyRef.current = false;
+    deviceListFailureCountRef.current = 0;
     if (refreshTimer.current) { clearInterval(refreshTimer.current); refreshTimer.current = null; }
   }, []);
 
@@ -256,7 +336,12 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
 
   const refreshDevices = useCallback(async () => {
     const epoch = accountEpochRef.current;
+    if (refreshInFlightRef.current?.epoch === epoch) {
+      log.debug('Device list refresh already in flight; coalescing duplicate request');
+      return;
+    }
     const requestId = ++refreshRequestRef.current;
+    refreshInFlightRef.current = { epoch, requestId };
     const isCurrent = () => (
       isAccountEpochCurrent(epoch) && refreshRequestRef.current === requestId
     );
@@ -273,37 +358,29 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
       setDevices(list);
       setDevicesReady(true);
       setRelayError(null);
+      deviceListFailureCountRef.current = 0;
     } catch (e) {
       if (!isCurrent()) return;
       log.warn('refreshDevices failed', e);
       if (isAccountAuthFailure(e)) {
         await handleSessionExpired(e, epoch);
       } else {
-        markRelayUnreachable();
+        deviceListFailureCountRef.current += 1;
+        // list_devices is an HTTP snapshot while account device routing uses
+        // WebSocket. Keep the last/presence-derived list when WS is healthy;
+        // one failed snapshot must not be reported as a total Relay outage.
+        if (!deviceRoutingReadyRef.current
+          && deviceListFailureCountRef.current >= DEVICE_LIST_FAILURE_THRESHOLD) {
+          markRelayUnreachable();
+        }
+      }
+    } finally {
+      if (refreshInFlightRef.current?.epoch === epoch
+        && refreshInFlightRef.current.requestId === requestId) {
+        refreshInFlightRef.current = null;
       }
     }
   }, [localDeviceId, handleSessionExpired, isAccountEpochCurrent, markRelayUnreachable]);
-
-  const handleRetryConnect = useCallback(async () => {
-    const epoch = accountEpochRef.current;
-    setLoading(true);
-    setRelayError(null);
-    try {
-      await remoteConnectAPI.accountConnectDevices();
-      if (!isAccountEpochCurrent(epoch)) return;
-      await refreshDevices();
-    } catch (err) {
-      log.warn('retry connect failed', err);
-      if (!isAccountEpochCurrent(epoch)) return;
-      if (isAccountAuthFailure(err)) {
-        await handleSessionExpired(err, epoch);
-        return;
-      }
-      markRelayUnreachable();
-    } finally {
-      if (isAccountEpochCurrent(epoch)) setLoading(false);
-    }
-  }, [handleSessionExpired, isAccountEpochCurrent, markRelayUnreachable, refreshDevices]);
 
   const applyPresenceOnline = useCallback((onlineDevices: Array<{ device_id: string; device_name: string }>) => {
     const onlineIds = new Set(onlineDevices.map(d => d.device_id));
@@ -345,12 +422,90 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
     );
   }, []);
 
+  const attemptDeviceReconnect = useCallback(async (showLoading: boolean) => {
+    if (deviceReconnectInFlightRef.current) {
+      log.debug('Device routing recovery already in flight; coalescing duplicate request');
+      return;
+    }
+    const epoch = accountEpochRef.current;
+    deviceReconnectInFlightRef.current = true;
+    if (showLoading) {
+      setLoading(true);
+      setRelayError(null);
+    }
+    try {
+      const onlineDevices = await connectDevicesWithRetry(
+        () => isAccountEpochCurrent(epoch),
+      );
+      if (!isAccountEpochCurrent(epoch)) return;
+      deviceRoutingReadyRef.current = true;
+      deviceListFailureCountRef.current = 0;
+      applyPresenceOnline(onlineDevices);
+      setDevicesReady(true);
+      setRelayError(null);
+      try {
+        const info = await remoteConnectAPI.getDeviceInfo();
+        if (!isAccountEpochCurrent(epoch)) return;
+        setLocalDeviceId(info.device_id);
+      } catch (error) {
+        log.warn('getDeviceInfo after reconnect failed', error);
+      }
+      if (!isAccountEpochCurrent(epoch)) return;
+      await refreshDevices();
+      startDevicePolling();
+    } catch (err) {
+      log.warn(
+        showLoading ? 'manual device reconnect failed' : 'background device reconnect failed',
+        err,
+      );
+      if (!isAccountEpochCurrent(epoch)) return;
+      if (isAccountAuthFailure(err)) {
+        await handleSessionExpired(err, epoch);
+        return;
+      }
+      markRelayUnreachable();
+    } finally {
+      deviceReconnectInFlightRef.current = false;
+      if (showLoading && isAccountEpochCurrent(epoch)) setLoading(false);
+    }
+  }, [
+    applyPresenceOnline,
+    handleSessionExpired,
+    isAccountEpochCurrent,
+    markRelayUnreachable,
+    refreshDevices,
+    startDevicePolling,
+  ]);
+
+  const handleRetryConnect = useCallback(() => {
+    void attemptDeviceReconnect(true);
+  }, [attemptDeviceReconnect]);
+
+  // Initial dial failures have no RelayClient instance to run its built-in
+  // reconnect loop. Keep recovering in the background while this account view
+  // is active; once a socket succeeds, RelayClient owns subsequent reconnects.
+  useEffect(() => {
+    if (activeAccountEpoch === null || !relayError) return undefined;
+    const timer = setInterval(
+      () => { void attemptDeviceReconnect(false); },
+      DEVICE_CONNECT_RECOVERY_INTERVAL_MS,
+    );
+    return () => clearInterval(timer);
+  }, [activeAccountEpoch, attemptDeviceReconnect, relayError]);
+
   /** Connect presence + load the device list for an active account session. */
   const initializeDevices = useCallback(async () => {
     const epoch = accountEpochRef.current;
     try {
-      await remoteConnectAPI.accountConnectDevices();
+      const onlineDevices = await connectDevicesWithRetry(
+        () => isAccountEpochCurrent(epoch),
+      );
       if (!isAccountEpochCurrent(epoch)) return;
+      deviceRoutingReadyRef.current = true;
+      deviceListFailureCountRef.current = 0;
+      applyPresenceOnline(onlineDevices);
+      setDevicesReady(true);
+      setRelayError(null);
       // Re-read after AuthOk may have adopted the account-bound device_id.
       try {
         const info = await remoteConnectAPI.getDeviceInfo();
@@ -367,11 +522,19 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
         return;
       }
       markRelayUnreachable();
+      return;
     }
     if (!isAccountEpochCurrent(epoch)) return;
     void refreshDevices();
     startDevicePolling();
-  }, [handleSessionExpired, isAccountEpochCurrent, markRelayUnreachable, refreshDevices, startDevicePolling]);
+  }, [
+    applyPresenceOnline,
+    handleSessionExpired,
+    isAccountEpochCurrent,
+    markRelayUnreachable,
+    refreshDevices,
+    startDevicePolling,
+  ]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -451,6 +614,16 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
       'account://device-presence',
       (payload) => {
         if (isAccountEpochCurrent(subscribedEpoch) && payload?.devices) {
+          deviceRoutingReadyRef.current = payload.devices.length > 0;
+          if (deviceRoutingReadyRef.current) {
+            deviceListFailureCountRef.current = 0;
+            setDevicesReady(true);
+            setRelayError(null);
+          } else {
+            // Start a fresh debounce window after routing loss; HTTP failures
+            // observed while WS was healthy must not count against it.
+            deviceListFailureCountRef.current = 0;
+          }
           applyPresenceOnline(payload.devices);
         }
       },
@@ -493,12 +666,6 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
     );
     info(t('accountLogin.syncStarted'));
 
-    // Connect device presence immediately so the device list can populate
-    // while the heavier settings/session sync continues.
-    void remoteConnectAPI.accountConnectDevices().catch((err) => {
-      log.warn('accountConnectDevices failed at sync start', err);
-    });
-
     void (async () => {
       try {
         let configJson = '{}';
@@ -517,40 +684,15 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
           if (!isCurrentOperation()) return;
         }
         const wp = workspacePath || '/';
-        const maxAttempts = 3;
-        let result: Awaited<ReturnType<typeof remoteConnectAPI.accountAutoSync>> | null = null;
-        let lastError: unknown = null;
-        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-          if (!isCurrentOperation()) return;
-          try {
-            result = await remoteConnectAPI.accountAutoSync(
-              isFirstLogin,
-              wp,
-              configJson,
-              operationId,
-            );
-            if (!isCurrentOperation()) return;
-            lastError = null;
-            break;
-          } catch (e) {
-            if (!isCurrentOperation()) return;
-            lastError = e;
-            log.warn(`Auto-sync attempt ${attempt}/${maxAttempts} failed`, e);
-            if (isNonRetryableSyncError(e)) {
-              break;
-            }
-            if (attempt < maxAttempts) {
-              info(t('accountLogin.syncRetrying', { attempt, max: maxAttempts }));
-              await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
-              if (!isCurrentOperation()) return;
-            }
-          }
-        }
-        if (!result) {
-          throw lastError instanceof Error
-            ? lastError
-            : new Error(String(lastError ?? 'auto-sync failed'));
-        }
+        // AccountClient owns transient Relay retries with one shared deadline.
+        // Replaying this entire workflow would also repeat deterministic local
+        // config/filesystem work and multiply the transport retry budget.
+        const result = await remoteConnectAPI.accountAutoSync(
+          isFirstLogin,
+          wp,
+          configJson,
+          operationId,
+        );
         if (!isCurrentOperation()) return;
         log.info(
           `Auto-sync done: settings=${result.settings_synced} exported=${result.sessions_exported}`,
@@ -700,16 +842,9 @@ export const AccountPanel: React.FC<AccountPanelProps> = ({
     setLoading(true);
     setError(null);
     try {
-      try {
-        await remoteConnectAPI.accountFinalizeLogin(pendingLoginId);
-      } catch (firstError) {
-        if (!isAccountEpochCurrent(epoch)) return;
-        // The backend commit may have succeeded even when its transport
-        // response was lost. Retrying the same opaque owner is idempotent and
-        // cannot authorize a replacement account generation.
-        log.warn('pending login finalize response was ambiguous; retrying', firstError);
-        await remoteConnectAPI.accountFinalizeLogin(pendingLoginId);
-      }
+      // The backend records the exact pending owner after commit, so retrying
+      // the same opaque owner remains fenced from a replacement account.
+      await finalizePendingLoginWithRetry(pendingLoginId);
       if (!isAccountEpochCurrent(epoch)) return;
       if (pendingLoginIdRef.current === pendingLoginId) {
         pendingLoginIdRef.current = null;

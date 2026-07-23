@@ -18,6 +18,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::sync::OnceLock;
 use subtle::ConstantTimeEq;
@@ -56,9 +57,11 @@ fn valid_password_hash(value: &str) -> bool {
         })
 }
 
-fn decoy_login_challenge(username: &str) -> LoginChallengeResponse {
-    use sha2::{Digest, Sha256};
+fn valid_login_request_id(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok()
+}
 
+fn decoy_login_challenge(username: &str) -> LoginChallengeResponse {
     static SECRET: OnceLock<[u8; 32]> = OnceLock::new();
     let secret = SECRET.get_or_init(rand::random);
     let material = |label: &[u8]| {
@@ -86,6 +89,7 @@ fn decoy_login_challenge(username: &str) -> LoginChallengeResponse {
             BASE64.encode(ciphertext),
             BASE64.encode(&nonce_material[..12])
         ),
+        login_idempotency_supported: true,
     }
 }
 
@@ -95,7 +99,12 @@ fn decoy_login_challenge(username: &str) -> LoginChallengeResponse {
 /// which is acceptable for brute-force throttling (the account lockout in the
 /// DB is the durable backstop).
 pub struct LoginRateLimiter {
-    attempts: DashMap<String, Vec<i64>>,
+    attempts: DashMap<String, Vec<RateLimitAttempt>>,
+}
+
+struct RateLimitAttempt {
+    timestamp: i64,
+    replay_key: Option<String>,
 }
 
 impl LoginRateLimiter {
@@ -105,27 +114,46 @@ impl LoginRateLimiter {
         }
     }
 
-    /// Record an attempt for `ip` and return `true` if the IP is still under
-    /// the per-minute limit (i.e. the attempt is allowed).
-    fn check_and_record(&self, ip: &str, max_per_min: usize) -> bool {
+    /// Record an attempt for one rate-limit scope and return `true` if the IP
+    /// is still under the per-minute limit. An exact replay key is counted once
+    /// so an ambiguous idempotent response cannot consume the full login budget.
+    fn check_and_record(
+        &self,
+        scope: &str,
+        ip: &str,
+        max_per_min: usize,
+        replay_key: Option<&str>,
+    ) -> bool {
         let now = Utc::now().timestamp();
         let cutoff = now - 60;
-        if self.attempts.len() >= MAX_RATE_LIMIT_BUCKETS && !self.attempts.contains_key(ip) {
+        let bucket_key = format!("{scope}:{ip}");
+        if self.attempts.len() >= MAX_RATE_LIMIT_BUCKETS && !self.attempts.contains_key(&bucket_key)
+        {
             self.attempts.retain(|_, timestamps| {
-                timestamps.retain(|timestamp| *timestamp > cutoff);
+                timestamps.retain(|attempt| attempt.timestamp > cutoff);
                 !timestamps.is_empty()
             });
             if self.attempts.len() >= MAX_RATE_LIMIT_BUCKETS {
                 return false;
             }
         }
-        let mut entry = self.attempts.entry(ip.to_string()).or_default();
+        let mut entry = self.attempts.entry(bucket_key).or_default();
         let timestamps = entry.value_mut();
-        timestamps.retain(|t| *t > cutoff);
+        timestamps.retain(|attempt| attempt.timestamp > cutoff);
+        if replay_key.is_some_and(|key| {
+            timestamps
+                .iter()
+                .any(|attempt| attempt.replay_key.as_deref() == Some(key))
+        }) {
+            return true;
+        }
         if timestamps.len() >= max_per_min {
             return false;
         }
-        timestamps.push(now);
+        timestamps.push(RateLimitAttempt {
+            timestamp: now,
+            replay_key: replay_key.map(str::to_string),
+        });
         true
     }
 }
@@ -180,6 +208,7 @@ pub struct LoginChallengeResponse {
     pub kdf_salt: String,
     pub argon2_params: String,
     pub wrapped_master_key: String,
+    pub login_idempotency_supported: bool,
 }
 
 #[derive(Deserialize)]
@@ -188,6 +217,8 @@ pub struct LoginRequest {
     pub password_hash: String,
     pub device_id: String,
     pub device_name: String,
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -213,6 +244,7 @@ pub(crate) async fn verify_password_hash_credentials(
     headers: &HeaderMap,
     username: &str,
     password_hash: &str,
+    rate_limit_replay_key: Option<&str>,
 ) -> Result<UserRow, (StatusCode, Json<ErrorResponse>)> {
     let Some(db) = state.db.as_ref() else {
         return Err(err(
@@ -222,10 +254,12 @@ pub(crate) async fn verify_password_hash_credentials(
     };
 
     let ip = client_ip(headers, peer_addr);
-    if !state
-        .login_rate_limiter
-        .check_and_record(&ip, MAX_LOGIN_ATTEMPTS_PER_MIN)
-    {
+    if !state.login_rate_limiter.check_and_record(
+        "credentials",
+        &ip,
+        MAX_LOGIN_ATTEMPTS_PER_MIN,
+        rate_limit_replay_key,
+    ) {
         return Err(err(
             "too many login attempts from this IP",
             StatusCode::TOO_MANY_REQUESTS,
@@ -318,7 +352,7 @@ pub async fn login_challenge(
     );
     if !state
         .login_rate_limiter
-        .check_and_record(&ip, MAX_CHALLENGE_PER_MIN)
+        .check_and_record("challenge", &ip, MAX_CHALLENGE_PER_MIN, None)
     {
         return Err(err(
             "too many requests, try later",
@@ -349,6 +383,7 @@ pub async fn login_challenge(
         kdf_salt: user.kdf_salt,
         argon2_params: user.argon2_params,
         wrapped_master_key: user.wrapped_master_key,
+        login_idempotency_supported: true,
     }))
 }
 
@@ -361,6 +396,10 @@ pub async fn login(
 ) -> Result<Json<AuthResponse>, (StatusCode, Json<ErrorResponse>)> {
     if !valid_device_id(&body.device_id)
         || !valid_bounded_text(&body.device_name, MAX_DEVICE_NAME_BYTES)
+        || body
+            .request_id
+            .as_deref()
+            .is_some_and(|request_id| !valid_login_request_id(request_id))
     {
         return Err(err("invalid login parameters", StatusCode::BAD_REQUEST));
     }
@@ -368,12 +407,27 @@ pub async fn login(
         .db
         .as_ref()
         .ok_or_else(|| err("account features disabled", StatusCode::NOT_IMPLEMENTED))?;
+    let rate_limit_replay_key = body.request_id.as_ref().map(|request_id| {
+        let mut hasher = Sha256::new();
+        for value in [
+            request_id.as_str(),
+            body.username.as_str(),
+            body.password_hash.as_str(),
+            body.device_id.as_str(),
+            body.device_name.as_str(),
+        ] {
+            hasher.update((value.len() as u64).to_be_bytes());
+            hasher.update(value.as_bytes());
+        }
+        BASE64.encode(hasher.finalize())
+    });
     let user = verify_password_hash_credentials(
         &state,
         connect_info.map(|Extension(ConnectInfo(addr))| addr),
         &headers,
         &body.username,
         &body.password_hash,
+        rate_limit_replay_key.as_deref(),
     )
     .await?;
 
@@ -384,12 +438,16 @@ pub async fn login(
             err("internal error", StatusCode::INTERNAL_SERVER_ERROR)
         })?;
 
-    let token = AuthToken::create(db, &user.user_id, &body.device_id)
-        .await
-        .map_err(|e| {
-            tracing::error!("login: failed to create token: {e}");
-            err("internal error", StatusCode::INTERNAL_SERVER_ERROR)
-        })?;
+    let token = match body.request_id.as_deref() {
+        Some(request_id) => {
+            AuthToken::create_idempotent(db, &user.user_id, &body.device_id, request_id).await
+        }
+        None => AuthToken::create(db, &user.user_id, &body.device_id).await,
+    }
+    .map_err(|e| {
+        tracing::error!("login: failed to create token: {e}");
+        err("internal error", StatusCode::INTERNAL_SERVER_ERROR)
+    })?;
 
     tracing::info!("Account login: user_id={}", user.user_id);
     Ok(Json(AuthResponse {
@@ -665,6 +723,7 @@ mod tests {
         assert_eq!(first.status(), StatusCode::OK);
         let first_body = to_bytes(first.into_body(), 16 * 1024).await.unwrap();
         let first_json: LoginChallengeResponse = serde_json::from_slice(&first_body).unwrap();
+        assert!(first_json.login_idempotency_supported);
         assert_eq!(BASE64.decode(&first_json.salt).unwrap().len(), 16);
         assert_eq!(BASE64.decode(&first_json.kdf_salt).unwrap().len(), 16);
         let (ciphertext, nonce) = first_json.wrapped_master_key.split_once('.').unwrap();
@@ -674,5 +733,67 @@ mod tests {
         let second = app.oneshot(request()).await.unwrap();
         let second_body = to_bytes(second.into_body(), 16 * 1024).await.unwrap();
         assert_eq!(first_body, second_body);
+    }
+
+    #[tokio::test]
+    async fn login_request_id_reuses_the_issued_token() {
+        let (app, db, _token) = setup_app().await;
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": "alice",
+                        "password_hash": "hash",
+                        "device_id": "retry-device",
+                        "device_name": "Retry Device",
+                        "request_id": request_id,
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+
+        let first = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = to_bytes(first.into_body(), 16 * 1024).await.unwrap();
+        let second = app.oneshot(request()).await.unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_body = to_bytes(second.into_body(), 16 * 1024).await.unwrap();
+        let first_token = serde_json::from_slice::<serde_json::Value>(&first_body).unwrap()
+            ["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let second_token = serde_json::from_slice::<serde_json::Value>(&second_body).unwrap()
+            ["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert_eq!(first_token, second_token);
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM auth_tokens WHERE request_id = ?")
+            .bind(&request_id)
+            .fetch_one(&*db)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 1);
+    }
+
+    #[test]
+    fn exact_idempotent_login_replays_consume_one_rate_limit_slot() {
+        let limiter = LoginRateLimiter::new();
+        for _ in 0..20 {
+            assert!(limiter.check_and_record("credentials", "127.0.0.1", 2, Some("same")));
+        }
+        assert!(limiter.check_and_record("credentials", "127.0.0.1", 2, Some("second")));
+        assert!(!limiter.check_and_record("credentials", "127.0.0.1", 2, Some("third")));
+
+        // Challenge traffic has its own budget and cannot exhaust credential
+        // verification for the same client IP.
+        assert!(limiter.check_and_record("challenge", "127.0.0.1", 1, None));
     }
 }
