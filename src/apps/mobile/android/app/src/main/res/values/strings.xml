@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BitFun 眼镜</string>
+    <string name="scan_title">扫码连接</string>
+    <string name="scan_hint">将桌面端远程控制二维码对准框内</string>
+    <string name="scan_grant_camera">允许使用相机</string>
+    <string name="scan_camera_needed">需要相机权限才能扫描配对二维码</string>
+    <string name="scan_camera_denied">相机权限被拒绝，请点击「允许使用相机」重试</string>
+    <string name="scan_invalid_qr">不是有效的 BitFun 配对二维码</string>
+    <string name="scan_opening">正在打开…</string>
+    <string name="glasses_web_missing">缺少内置眼镜端资源，请同步资源后重新打包</string>
+    <string name="status_error">出错了</string>
+    <string name="voice_unavailable">未找到可用的语音识别服务，请在系统设置中启用语音识别后重试</string>
+    <string name="voice_prompt">请说话…</string>
+    <string name="voice_start_failed">无法启动语音输入</string>
+    <string name="voice_error_audio">麦克风不可用，请检查权限或设备</string>
+    <string name="voice_error_client">语音识别已中断</string>
+    <string name="voice_error_permission">需要麦克风权限才能语音输入</string>
+    <string name="voice_error_network">语音识别需要网络，请稍后重试</string>
+    <string name="voice_error_busy">语音识别正忙，请稍后再试</string>
+    <string name="voice_error_server">语音识别服务异常，请稍后重试</string>
+    <string name="voice_error_generic">语音识别失败，请重试</string>
+    <string name="voice_error_no_match">未识别到语音，请靠近麦克风后重试</string>
+    <string name="voice_error_init">语音识别引擎初始化失败</string>
+</resources>

@@ -11,5 +11,6 @@ and platform adapters. Product logic and stable contracts should remain in the
 platform-agnostic Rust layers and be exposed to these apps through explicit
 interfaces.
 
-The directories are intentionally build-tool agnostic until the native stacks
-and minimum supported platform versions are selected.
+`android/` hosts the RayNeo X3 Pro remote-control companion Gradle project
+(`com.bitfun.glasses`). See `android/README.md` for build and MVP scope.
+`ios/` remains a placeholder until its stack is selected.

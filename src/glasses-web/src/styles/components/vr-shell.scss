@@ -1,0 +1,1441 @@
+﻿@use '../motion' as motion;
+
+// Optical AR edge HUD - frosted glass (semi-transparent + light blur).
+// Keep blur modest for Android WebView; no liquid/displacement effects.
+
+// RayNeo X-series design guide: low APL, no large white, min 2px strokes,
+// borderless frost only. Keep blur modest for WebView GPU cost.
+@mixin vr-frost($kind: control) {
+  box-sizing: border-box !important;
+  border: 0 !important;
+  outline: none !important;
+  border-radius: var(--vr-radius, 16px) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  backdrop-filter: blur(8px) !important;
+  box-shadow: none !important;
+  color: #ffffff !important;
+  // No press transform - base mobile translateY/scale jitters in AR.
+  transform: none !important;
+  translate: none !important;
+  scale: none !important;
+
+  @if $kind == accent {
+    // Prefer green-channel accent (lower AR power vs red/warm fills).
+    background: rgba(61, 220, 151, 0.14) !important;
+  }
+
+  @if $kind == panel {
+    background: rgba(255, 255, 255, 0.06) !important;
+  }
+}
+
+.mobile-app--vr {
+  flex-direction: column;
+  background: transparent;
+}
+
+html.vr-ui,
+body.vr-ui {
+  // Design guide �5.2: minimum readable size is 16px.
+  font-size: 16px;
+  line-height: 1.45;
+  background: transparent;
+}
+
+.vr-shell {
+  // One shared corner radius for all frost surfaces (cards, buttons, inputs).
+  --vr-radius: 16px;
+  --vr-label-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  // AR readability: no gray copy - all text reads as white.
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #ffffff;
+  --color-text-muted: #ffffff;
+  --color-text-tertiary: #ffffff;
+  // Design guide �5.2 / �5.4: min 16px type; safe margins 30x / 20y.
+  --vr-font-min: 16px;
+  --vr-font-title: 18px;
+  --vr-line: 1.45;
+
+  // Shared geometry so left / focus / right stay aligned and never overlap.
+  // Keep center FoV clear (edge HUD); rails stay narrow for APL budget.
+  // Design guide 5.4: >=30px horizontal / >=20px vertical safe margins.
+  --vr-edge-inset-y: max(20px, 4vh);
+  --vr-edge-inset-x: 30px;
+  --vr-gap: 20px;
+  --vr-stack-gap: 10px;
+  --vr-control-pad-y: 10px;
+  --vr-control-pad-x: 12px;
+  --vr-control-min-h: 44px;
+  --vr-icon-size: 24px;
+  --vr-rail-w: min(176px, 17vw);
+  --vr-left-w: var(--vr-rail-w);
+  --vr-right-w: var(--vr-rail-w);
+
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+.vr-shell__left,
+.vr-shell__right {
+  position: absolute;
+  top: max(var(--vr-edge-inset-y), env(safe-area-inset-top, 0px));
+  bottom: max(var(--vr-edge-inset-y), env(safe-area-inset-bottom, 0px));
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.vr-shell__left {
+  left: max(var(--vr-edge-inset-x), env(safe-area-inset-left, 0px));
+  width: var(--vr-left-w);
+}
+
+.vr-shell__right {
+  right: max(var(--vr-edge-inset-x), env(safe-area-inset-right, 0px));
+  width: var(--vr-right-w);
+}
+
+.vr-shell__icon-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  @include vr-frost(control);
+  border-radius: 999px !important;
+  font-size: var(--vr-font-min);
+  line-height: 1;
+  cursor: pointer;
+  text-shadow: none;
+  padding: 0;
+
+  &:active {
+    @include vr-frost(accent);
+    border-radius: 999px !important;
+  }
+
+  &.is-remote {
+    @include vr-frost(accent);
+    border-radius: 999px !important;
+  }
+}
+
+.vr-shell__host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  // Edge inset already frames the rails; keep host flush so left/right align.
+  padding: 0;
+  gap: var(--vr-stack-gap);
+}
+
+.vr-shell__host[hidden] {
+  display: none !important;
+}
+
+.vr-shell__controls-slot {
+  // Natural height only; leftover vertical space goes to the status card.
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.vr-shell__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-shadow: var(--vr-label-shadow);
+  flex-shrink: 0;
+}
+
+.vr-shell__health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--color-text-muted);
+  box-shadow: none;
+
+  &--connected { background: var(--color-accent-500, #3ddc97); }
+  &--checking { background: var(--color-warning, #e6b84d); }
+  &--unreachable { background: var(--color-error, #f07178); }
+  &--unpaired { background: var(--color-text-muted); }
+}
+
+.vr-shell__health-text {
+  font-size: var(--vr-font-min);
+  line-height: var(--vr-line);
+  text-shadow: var(--vr-label-shadow);
+}
+
+.vr-shell__session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  // Fill all space between controls above and action icons below.
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  padding: var(--vr-control-pad-y) var(--vr-control-pad-x);
+  @include vr-frost(control);
+  text-shadow: var(--vr-label-shadow);
+  overflow: hidden;
+
+  &.is-busy {
+    @include vr-frost(accent);
+  }
+}
+
+.vr-shell__session-phase {
+  flex: 0 0 auto;
+  font-size: var(--vr-font-min);
+  line-height: var(--vr-line);
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.vr-shell__session-card.is-idle .vr-shell__session-phase {
+  color: #ffffff;
+}
+
+.vr-shell__session-preview {
+  margin: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  font-size: var(--vr-font-min);
+  line-height: var(--vr-line);
+  color: #ffffff;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.vr-shell__confirm-btn {
+  width: 100%;
+  min-height: var(--vr-control-min-h);
+  padding: var(--vr-control-pad-y) var(--vr-control-pad-x);
+  @include vr-frost(accent);
+  font-size: var(--vr-font-min);
+  line-height: var(--vr-line);
+  font-weight: 600;
+  cursor: pointer;
+  text-shadow: none;
+
+  &:active {
+    filter: brightness(1.08);
+  }
+
+  &--muted {
+    @include vr-frost(control);
+    font-weight: 500;
+  }
+}
+
+.vr-shell__right-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: auto;
+  margin-bottom: 0;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+// True clear FoV: hide edge rails; only the restore affordance remains.
+.vr-shell--clear {
+  .vr-shell__left,
+  .vr-shell__right {
+    display: none !important;
+  }
+}
+
+.vr-shell__restore-btn {
+  position: absolute;
+  z-index: 6;
+  right: max(var(--vr-edge-inset-x), env(safe-area-inset-right, 0px));
+  bottom: max(var(--vr-edge-inset-y), env(safe-area-inset-bottom, 0px));
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px !important;
+  @include vr-frost(control);
+  color: #ffffff;
+  cursor: pointer;
+
+  &:active {
+    @include vr-frost(accent);
+  }
+}
+
+// Center chat layout slot: transparent host; glass lives on dialogue + input frames.
+.vr-shell__focus {
+  position: absolute;
+  z-index: 4;
+  top: max(var(--vr-edge-inset-y), env(safe-area-inset-top, 0px));
+  bottom: max(var(--vr-edge-inset-y), env(safe-area-inset-bottom, 0px));
+  left: calc(max(var(--vr-edge-inset-x), env(safe-area-inset-left, 0px)) + var(--vr-left-w) + var(--vr-gap));
+  right: calc(max(var(--vr-edge-inset-x), env(safe-area-inset-right, 0px)) + var(--vr-right-w) + var(--vr-gap));
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  animation: vrFocusIn 160ms motion.$easing-decelerate both;
+}
+
+.vr-shell__focus > .chat-page {
+  flex: 1;
+  min-height: 0;
+  background: transparent;
+}
+
+// Non-VR: wrapper must not affect layout.
+.chat-page:not(.chat-page--vr) .chat-page__dialogue {
+  display: contents;
+}
+
+@keyframes vrFocusIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vr-shell__focus,
+  .vr-shell__overlay-panel {
+    animation: none;
+    transition: none;
+  }
+}
+
+.vr-shell__overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--vr-edge-inset-y) var(--vr-edge-inset-x);
+  box-sizing: border-box;
+}
+
+.vr-shell__overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  // Click-catcher only; avoid a heavy black wash over the see-through view.
+  background: transparent;
+  cursor: pointer;
+}
+
+.vr-shell__overlay-panel {
+  position: relative;
+  z-index: 1;
+  width: min(480px, 52vw);
+  max-width: 100%;
+  max-height: min(70vh, 720px);
+  @include vr-frost(panel);
+  overflow: hidden;
+  animation: vrOverlayIn 160ms motion.$easing-decelerate both;
+}
+
+.vr-shell__confirm-panel {
+  padding: 20px;
+  color: #ffffff;
+  text-shadow: none;
+
+  h3 {
+    margin: 0 0 8px;
+    font-size: var(--vr-font-title);
+    line-height: var(--vr-line);
+    color: #ffffff;
+  }
+
+  p {
+    margin: 0 0 16px;
+    font-size: var(--vr-font-min);
+    color: #ffffff;
+    line-height: var(--vr-line);
+  }
+}
+
+.vr-shell__confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vr-stack-gap);
+
+  .vr-shell__confirm-btn {
+    flex: 1 1 calc(50% - var(--vr-stack-gap));
+    min-width: 0;
+  }
+}
+
+@keyframes vrOverlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+// Portaled session / control panes: never scroll on glasses rails.
+.session-list__vr-sessions,
+.session-list__vr-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vr-stack-gap);
+  overflow: hidden;
+  background: transparent;
+}
+
+// Right-rail controls keep natural height so the status card can grow.
+.session-list__vr-controls {
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.session-list__vr-sessions {
+  height: 100%;
+
+  .session-list__section-head {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    flex-shrink: 0;
+  }
+
+  .session-list__empty {
+    padding: var(--vr-control-pad-y) var(--vr-control-pad-x);
+    text-align: center;
+    font-size: var(--vr-font-min);
+    line-height: var(--vr-line);
+    @include vr-frost(control);
+    text-shadow: var(--vr-label-shadow);
+  }
+
+  .session-list__section-title {
+    font-size: var(--vr-font-title);
+    line-height: var(--vr-line);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #ffffff;
+    text-shadow: var(--vr-label-shadow);
+  }
+
+  // Low density: drop secondary count line on the narrow rail.
+  .session-list__section-meta {
+    display: none;
+  }
+
+  .session-list__cards,
+  .session-list__tree {
+    display: flex;
+    flex-direction: column;
+    gap: var(--vr-stack-gap);
+    overflow: hidden;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .session-list__workspace-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--vr-stack-gap);
+    flex-shrink: 0;
+    min-width: 0;
+  }
+
+  .session-list__workspace-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    min-width: 0;
+    width: 100%;
+    margin: 0;
+    min-height: var(--vr-control-min-h);
+    padding: var(--vr-control-pad-y) var(--vr-control-pad-x);
+    border: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    @include vr-frost(control);
+    text-shadow: var(--vr-label-shadow);
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    &:active:not(:disabled) {
+      filter: brightness(1.06);
+    }
+
+    &--selected {
+      @include vr-frost(accent);
+    }
+  }
+
+  .session-list__workspace-row-icon {
+    width: var(--vr-icon-size);
+    height: var(--vr-icon-size);
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+  }
+
+  .session-list__workspace-row-name {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--vr-font-min);
+    font-weight: 600;
+    line-height: var(--vr-line);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-list__workspace-sessions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--vr-stack-gap);
+    padding-left: 12px;
+    min-width: 0;
+  }
+
+  .session-list__empty--nested {
+    padding: 8px 10px;
+  }
+
+  .session-list__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    min-width: 0;
+    width: 100%;
+    margin: 0;
+    min-height: var(--vr-control-min-h);
+    padding: var(--vr-control-pad-y) var(--vr-control-pad-x);
+    @include vr-frost(control);
+    animation: none;
+    overflow: hidden;
+    text-shadow: var(--vr-label-shadow);
+    cursor: pointer;
+
+    &--nested {
+      min-height: calc(var(--vr-control-min-h) - 4px);
+    }
+
+    &:active {
+      filter: brightness(1.06);
+    }
+  }
+
+  .session-list__item-icon {
+    width: var(--vr-icon-size);
+    height: var(--vr-icon-size);
+    flex-shrink: 0;
+  }
+
+  .session-list__item-body {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .session-list__item-top {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .session-list__item-name {
+    display: block;
+    flex: none;
+    width: 100%;
+    font-size: var(--vr-font-min);
+    line-height: var(--vr-line);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    -webkit-line-clamp: unset;
+    -webkit-box-orient: unset;
+  }
+
+  // Icon already encodes type; badge text collides in the narrow rail.
+  .session-list__agent-badge {
+    display: none;
+  }
+
+  .session-list__item--selected {
+    outline: none;
+    @include vr-frost(accent);
+  }
+
+  // Low density: hide timestamps on edge rail.
+  .session-list__item-time {
+    display: none;
+  }
+}
+
+.session-list__vr-controls {
+  .session-list__mode-toggle {
+    margin: 0;
+    flex-shrink: 0;
+    flex-direction: column;
+    gap: var(--vr-stack-gap);
+    padding: 0;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .session-list__mode-toggle-btn {
+    width: 100%;
+    min-height: var(--vr-control-min-h);
+    padding: var(--vr-control-pad-y) var(--vr-control-pad-x);
+    font-size: var(--vr-font-min);
+    line-height: var(--vr-line);
+    justify-content: flex-start;
+    text-align: left;
+    @include vr-frost(control);
+    text-shadow: none;
+
+    &.is-active {
+      @include vr-frost(accent);
+    }
+
+    &:active {
+      filter: brightness(1.06);
+    }
+  }
+
+  .session-list__assistant-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    width: 100%;
+    min-width: 0;
+    min-height: var(--vr-control-min-h);
+    margin: 0;
+    padding: var(--vr-control-pad-y) var(--vr-control-pad-x);
+    @include vr-frost(control);
+  }
+
+  .session-list__assistant-icon,
+  .session-list__create-icon {
+    width: var(--vr-icon-size) !important;
+    height: var(--vr-icon-size) !important;
+    background: transparent !important;
+    color: #ffffff !important;
+    box-shadow: none !important;
+    flex-shrink: 0;
+  }
+
+  .session-list__assistant-copy {
+    min-width: 0;
+    flex: 1;
+    gap: 0;
+  }
+
+  // Low density: one line, name only (drop uppercase category label).
+  .session-list__assistant-label {
+    display: none;
+  }
+
+  .session-list__assistant-name {
+    font-size: var(--vr-font-min);
+    line-height: var(--vr-line);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-list__create-row--compact {
+    display: flex;
+    flex-direction: column;
+    gap: var(--vr-stack-gap);
+    flex-shrink: 0;
+    min-width: 0;
+    width: 100%;
+
+    .session-list__create-btn {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 0 0 auto;
+      width: 100%;
+      min-width: 0;
+      min-height: var(--vr-control-min-h);
+      padding: var(--vr-control-pad-y) var(--vr-control-pad-x);
+      @include vr-frost(control);
+      animation: none;
+      transform: none;
+      cursor: pointer;
+      overflow: hidden;
+
+      &:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      &:active:not(:disabled) {
+        @include vr-frost(accent);
+        transform: none;
+      }
+    }
+
+    .session-list__create-icon {
+      width: var(--vr-icon-size);
+      height: var(--vr-icon-size);
+      flex-shrink: 0;
+    }
+
+    .session-list__create-title {
+      flex: 1;
+      min-width: 0;
+      font-size: var(--vr-font-min);
+      font-weight: 600;
+      line-height: var(--vr-line);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+}
+
+.chat-page--vr {
+  // Dialogue uses exactly two sizes: body (large) + meta (small).
+  --vr-chat-body: var(--vr-font-min, 16px);
+  --vr-chat-meta: 13px;
+  // Shared collapsed bar height for thinking + tool rows.
+  --vr-chat-bar-h: 36px;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vr-stack-gap);
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  background: transparent !important;
+  color: #ffffff;
+  font-size: var(--vr-chat-meta);
+  line-height: var(--vr-line);
+
+  // Dialogue host: no outer glass frame / no title; messages only.
+  .chat-page__dialogue {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 0 !important;
+    border-radius: 0;
+    background: transparent !important;
+    box-shadow: none !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  .chat-page__header {
+    display: none !important;
+  }
+
+  .chat-msg {
+    color: #ffffff;
+  }
+
+  // Body (large): user + assistant message copy only.
+  .chat-msg__assistant-content,
+  .chat-msg__assistant-content *,
+  .chat-msg__user-content,
+  .chat-msg__user-content *,
+  .chat-page__input-box,
+  .chat-page__input-box textarea,
+  .chat-page__input-box input {
+    font-size: var(--vr-chat-body) !important;
+    line-height: var(--vr-line) !important;
+  }
+
+  .chat-page__messages,
+  .chat-page__content {
+    background: transparent;
+    border: 0;
+  }
+
+  .chat-page__messages {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    overflow-x: hidden;
+    overflow-y: scroll;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding: 0;
+  }
+
+  .chat-page__messages-inner {
+    display: flex;
+    flex-direction: column;
+    gap: var(--vr-stack-gap);
+    min-height: min-content;
+  }
+
+  // Frame 2: input is sibling of dialogue, not nested inside it.
+  .chat-page__input-wrap {
+    position: relative !important;
+    left: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    transform: none !important;
+    flex: 0 0 auto;
+    width: 100% !important;
+    max-width: none !important;
+    padding: 0 !important;
+    z-index: 12;
+
+    &:not(.is-expanded),
+    &.is-expanded {
+      max-width: none;
+    }
+
+    &:not(.is-expanded) .chat-page__input-box {
+      @include vr-frost(panel);
+
+      &:active {
+        transform: none;
+        filter: brightness(1.05);
+      }
+    }
+  }
+
+  .chat-page__input-box {
+    @include vr-frost(panel);
+  }
+
+  .chat-page__scroll-to-bottom {
+    position: absolute;
+    left: auto;
+    right: var(--vr-stack-gap);
+    bottom: var(--vr-stack-gap);
+    @include vr-frost(control);
+    border-radius: 999px !important;
+    // Opacity-only enter; no scale/translate (base chat styles use translateX(-50%)).
+    animation: vrScrollBtnIn 160ms motion.$easing-decelerate both;
+
+    &:active {
+      @include vr-frost(accent);
+      border-radius: 999px !important;
+      filter: brightness(1.06);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+    }
+  }
+
+  .chat-page__send-btn,
+  .chat-page__action-btn,
+  .chat-page__mode-pill,
+  .chat-page__image-remove {
+    @include vr-frost(control);
+  }
+
+  .chat-page__send-btn,
+  .chat-page__action-btn,
+  .chat-page__image-remove {
+    border-radius: 999px !important;
+  }
+
+  // Collapsed composer hides generic action buttons; keep the mic visible.
+  .chat-page__input-wrap:not(.is-expanded) .chat-page__voice-btn {
+    display: inline-flex !important;
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+  }
+
+  .chat-page__voice-btn.is-listening {
+    @include vr-frost(accent);
+    border-radius: 999px !important;
+  }
+
+  .chat-page__send-btn:not(:disabled),
+  .chat-page__send-btn.is-stop {
+    @include vr-frost(accent);
+    border-radius: 999px !important;
+  }
+
+  // Tool / thinking / todo / ask / menu: real class names (not legacy .tool-card).
+  .chat-tool-card,
+  .chat-tool-list--collapsed,
+  .chat-task-card,
+  .chat-todo-card,
+  .chat-ask-card,
+  .chat-thinking,
+  .chat-msg__menu-sheet,
+  .chat-msg__assistant-card,
+  .chat-msg__user-card,
+  .chat-model-selector__trigger,
+  .chat-model-selector__dropdown,
+  .chat-model-selector__option,
+  .chat-ask-card__option,
+  .chat-ask-card__submit,
+  .chat-ask-card__custom-input,
+  .chat-tool-card__cancel,
+  .chat-tool-list__header,
+  .chat-todo-card__header,
+  .chat-task-card__summary,
+  .chat-task-card__step,
+  .chat-msg__menu-btn,
+  .chat-msg__menu-cancel {
+    @include vr-frost(control);
+    text-shadow: none;
+  }
+
+  .chat-msg--user .chat-msg__user-card,
+  .chat-ask-card__option.is-selected,
+  .chat-ask-card__submit,
+  .chat-model-selector__option.is-selected {
+    @include vr-frost(accent);
+  }
+
+  // One frame only: glass on user-card; strip nested content border/fill.
+  .chat-msg--user .chat-msg__user-content {
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 10px 14px;
+  }
+
+  .chat-tool-card__type,
+  .chat-ask-card__tag,
+  .chat-todo-card__icon,
+  .chat-tool-card__expanded,
+  .chat-thinking__content-wrapper,
+  .chat-thinking__content,
+  .chat-todo-card__list,
+  .chat-task-card__steps,
+  .chat-tool-list__scroll {
+    background: transparent !important;
+    box-shadow: none !important;
+    color: #ffffff !important;
+  }
+
+  .chat-tool-card__type,
+  .chat-ask-card__tag {
+    border: 0 !important;
+    border-radius: var(--vr-radius) !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+    backdrop-filter: blur(8px) !important;
+    color: #ffffff !important;
+  }
+
+  // Meta (small): tools, thinking, todos, ask cards, chrome labels.
+  .chat-tool-card,
+  .chat-tool-card *,
+  .chat-tool-list--collapsed,
+  .chat-tool-list--collapsed *,
+  .chat-tool-list__header,
+  .chat-tool-list__count,
+  .chat-tool-list__stat,
+  .chat-thinking,
+  .chat-thinking *,
+  .chat-todo-card,
+  .chat-todo-card *,
+  .chat-task-card,
+  .chat-task-card *,
+  .chat-ask-card,
+  .chat-ask-card *,
+  .chat-model-selector__trigger,
+  .chat-model-selector__dropdown,
+  .chat-model-selector__option,
+  .chat-msg__response-toggle,
+  .chat-msg__response-label,
+  .chat-msg__menu-btn,
+  .chat-msg__menu-btn span,
+  .chat-msg__menu-cancel,
+  .chat-msg__typing,
+  .chat-msg__image-analyzing,
+  .chat-page__mode-pill,
+  .chat-page__action-btn,
+  .chat-page__send-btn {
+    font-size: var(--vr-chat-meta) !important;
+    line-height: var(--vr-line) !important;
+  }
+
+  .chat-thinking__toggle,
+  .chat-thinking__label,
+  .chat-tool-card__name,
+  .chat-tool-card__preview,
+  .chat-tool-card__duration,
+  .chat-tool-list__count,
+  .chat-tool-list__stat,
+  .chat-todo-card__current,
+  .chat-todo-card__stats,
+  .chat-todo-card__item-text,
+  .chat-ask-card__count,
+  .chat-ask-card__question-text,
+  .chat-ask-card__option-label,
+  .chat-ask-card__option-desc,
+  .chat-ask-card__waiting,
+  .chat-task-card__stat,
+  .chat-task-card__step-name,
+  .chat-task-card__step-preview,
+  .chat-msg__menu-btn span,
+  .chat-msg__typing {
+    color: #ffffff !important;
+  }
+
+  .chat-thinking {
+    padding: 0 !important;
+  }
+
+  // Match thinking toggle bar to tool header / tool row height.
+  .chat-thinking__toggle,
+  .chat-tool-list__header,
+  .chat-tool-card__row {
+    box-sizing: border-box !important;
+    width: 100%;
+    min-height: var(--vr-chat-bar-h) !important;
+    height: var(--vr-chat-bar-h);
+    padding: 0 12px !important;
+    margin: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+  }
+
+  .chat-thinking__toggle {
+    padding-left: 12px !important;
+  }
+
+  .chat-thinking__content-wrapper {
+    padding: 0 2px;
+
+    &::before,
+    &::after {
+      background: transparent !important;
+    }
+  }
+
+  .chat-thinking__content {
+    // Keep thinking copy off the left edge of the glass card / message column.
+    padding: 8px 12px 10px 18px !important;
+  }
+}
+
+@keyframes vrScrollBtnIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.mobile-app--vr {
+  --vr-radius: 16px;
+  --vr-font-min: 16px;
+  --vr-font-title: 18px;
+  --vr-line: 1.45;
+  --vr-edge-inset-y: max(20px, 4vh);
+  --vr-edge-inset-x: 30px;
+  --vr-gap: 20px;
+  --vr-stack-gap: 10px;
+  --vr-control-pad-y: 10px;
+  --vr-control-pad-x: 12px;
+  --vr-control-min-h: 44px;
+  --vr-icon-size: 24px;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #ffffff;
+  --color-text-muted: #ffffff;
+  --color-text-tertiary: #ffffff;
+  --color-bg-primary: transparent;
+  --color-bg-secondary: transparent;
+  --color-bg-tertiary: transparent;
+  --color-bg-elevated: transparent;
+  --color-bg-flowchat: transparent;
+  --color-overlay: transparent;
+  --element-bg-subtle: transparent;
+  --element-bg-base: transparent;
+  --element-bg-soft: transparent;
+  --color-accent-50: rgba(255, 255, 255, 0.08);
+  --color-accent-100: rgba(255, 255, 255, 0.12);
+  --color-purple-50: rgba(255, 255, 255, 0.08);
+  --color-purple-100: rgba(255, 255, 255, 0.12);
+  --color-pink-50: rgba(255, 255, 255, 0.08);
+  --color-pink-100: rgba(255, 255, 255, 0.12);
+  // Borderless frost: kill residual strokes from non-VR component styles.
+  --border-subtle: transparent;
+  --border-base: transparent;
+  --shadow-sm: none;
+  --shadow-base: none;
+  --shadow-lg: none;
+  --shadow-xl: none;
+  color: #ffffff;
+
+  // Any glass surface: no stroke / outline (fill + blur only).
+  .vr-shell__icon-btn,
+  .vr-shell__restore-btn,
+  .vr-shell__confirm-btn,
+  .session-list__item,
+  .session-list__workspace-row,
+  .session-list__assistant-bar,
+  .session-list__mode-toggle-btn,
+  .session-list__create-btn,
+  .session-list__picker-item,
+  .session-list__picker-close,
+  .session-list__picker-modal,
+  .session-list__menu-btn,
+  .session-list__menu-cancel,
+  .chat-page__input-box,
+  .chat-page__send-btn,
+  .chat-page__action-btn,
+  .chat-page__scroll-to-bottom,
+  .chat-page__mode-pill,
+  .chat-page__image-remove,
+  .chat-msg--user .chat-msg__user-card,
+  .chat-model-selector__trigger,
+  .chat-model-selector__dropdown,
+  .chat-model-selector__option,
+  .chat-ask-card__option,
+  .chat-ask-card__submit,
+  .chat-ask-card__custom-input,
+  .chat-tool-card,
+  .chat-tool-card__cancel,
+  .chat-tool-card__type,
+  .chat-tool-list__header,
+  .chat-todo-card,
+  .chat-todo-card__header,
+  .chat-task-card__summary,
+  .chat-task-card__step,
+  .chat-msg__menu-btn,
+  .chat-msg__menu-cancel,
+  .chat-ask-card__tag,
+  .devices-page__device,
+  .devices-page__back-btn,
+  .devices-page__refresh-btn,
+  .devices-page__retry-btn,
+  .devices-page__empty-card,
+  .pairing-page__card,
+  .pairing-page__form button,
+  .pairing-page__retry,
+  .pairing-page__error,
+  .mobile-lang-btn {
+    border: 0 !important;
+    border-color: transparent !important;
+    outline: none !important;
+    border-radius: var(--vr-radius) !important;
+    box-shadow: none !important;
+  }
+
+  .vr-shell__icon-btn,
+  .vr-shell__restore-btn,
+  .chat-page__scroll-to-bottom,
+  .chat-page__send-btn,
+  .chat-page__action-btn,
+  .chat-page__image-remove {
+    border-radius: 999px !important;
+  }
+
+  // Kill base mobile press/enter motion that still applied under glass
+  // (translateY(1px), scale, sessionItemIn). Those read as random offset in AR.
+  button,
+  [role='button'],
+  .session-list__item,
+  .session-list__workspace-row,
+  .session-list__assistant-bar,
+  .session-list__create-btn,
+  .session-list__mode-toggle-btn,
+  .session-list__picker-item,
+  .session-list__menu-btn,
+  .session-list__menu-cancel,
+  .chat-page__input-box,
+  .chat-page__send-btn,
+  .chat-page__action-btn,
+  .chat-page__scroll-to-bottom,
+  .chat-page__mode-pill,
+  .chat-page__image-remove,
+  .chat-msg__menu-btn,
+  .chat-msg__menu-cancel,
+  .chat-model-selector__trigger,
+  .chat-model-selector__option,
+  .chat-ask-card__option,
+  .chat-ask-card__submit,
+  .chat-tool-card__cancel,
+  .devices-page__device,
+  .devices-page__back-btn,
+  .devices-page__refresh-btn,
+  .devices-page__retry-btn,
+  .mobile-lang-btn,
+  .vr-shell__icon-btn,
+  .vr-shell__restore-btn,
+  .vr-shell__confirm-btn,
+  .pairing-page__form button,
+  .pairing-page__retry {
+    transform: none !important;
+    translate: none !important;
+    scale: none !important;
+    animation: none !important;
+    transition-property: background-color, border-color, filter, opacity, color !important;
+  }
+
+  button:active,
+  button:focus,
+  button:hover,
+  [role='button']:active,
+  [role='button']:focus,
+  [role='button']:hover,
+  .session-list__item:active,
+  .session-list__workspace-row:active,
+  .session-list__assistant-bar:active,
+  .session-list__create-btn:active,
+  .session-list__create-btn:active:not(:disabled),
+  .session-list__mode-toggle-btn:active,
+  .chat-page__input-box:active,
+  .chat-page__send-btn:active,
+  .chat-page__send-btn.is-stop:active,
+  .chat-page__action-btn:active,
+  .chat-page__scroll-to-bottom:active,
+  .chat-page__mode-pill:active,
+  .devices-page__device:active,
+  .mobile-lang-btn:active,
+  .vr-shell__icon-btn:active,
+  .vr-shell__restore-btn:active,
+  .vr-shell__confirm-btn:active {
+    transform: none !important;
+    translate: none !important;
+    scale: none !important;
+  }
+
+  .pairing-page,
+  .session-list,
+  .chat-page,
+  .devices-page {
+    background: transparent !important;
+    box-shadow: none !important;
+    color: #ffffff !important;
+  }
+
+  .session-list__item,
+  .session-list__workspace-row,
+  .session-list__assistant-bar,
+  .session-list__empty,
+  .devices-page__card {
+    box-shadow: none !important;
+    color: #ffffff !important;
+  }
+
+  .devices-page__header,
+  .devices-page__body,
+  .devices-page__loading,
+  .devices-page__empty,
+  .devices-page__empty-card,
+  .devices-page__empty-text,
+  .session-list__picker-empty,
+  .session-list__section-meta,
+  .session-list__item-time,
+  .session-list__workspace-row-name,
+  .session-list__assistant-label,
+  .session-list__assistant-name {
+    background: transparent !important;
+    border-color: transparent;
+    box-shadow: none !important;
+    color: #ffffff !important;
+  }
+
+  .devices-page__device,
+  .devices-page__back-btn,
+  .devices-page__refresh-btn,
+  .devices-page__retry-btn,
+  .devices-page__empty-card,
+  .session-list__picker-item,
+  .session-list__picker-close,
+  .session-list__menu-btn,
+  .session-list__menu-cancel,
+  .session-list__picker-empty {
+    @include vr-frost(control);
+  }
+
+  .session-list__picker-item.is-selected {
+    @include vr-frost(accent);
+  }
+
+  // Kill residual dark fills from non-VR component styles.
+  .session-list__empty,
+  .session-list__picker-modal,
+  .session-list__menu-sheet {
+    background: transparent !important;
+    box-shadow: none !important;
+    color: #ffffff !important;
+  }
+
+  // Bottom-sheet pickers clip right/bottom radii on AR; float them centered
+  // inside the safe insets instead of edge-flush full-width sheets.
+  .session-list__picker-overlay,
+  .session-list__menu-overlay {
+    align-items: center !important;
+    justify-content: center !important;
+    padding:
+      max(var(--vr-edge-inset-y, 6vh), env(safe-area-inset-top, 0px))
+      max(var(--vr-edge-inset-x, 16px), env(safe-area-inset-right, 0px))
+      max(var(--vr-edge-inset-y, 6vh), env(safe-area-inset-bottom, 0px))
+      max(var(--vr-edge-inset-x, 16px), env(safe-area-inset-left, 0px)) !important;
+    box-sizing: border-box;
+  }
+
+  .session-list__picker-modal {
+    width: min(100%, 360px) !important;
+    max-width: 100% !important;
+    max-height: min(60vh, 520px) !important;
+    margin: 0 !important;
+    padding: var(--vr-control-pad-y) var(--vr-control-pad-x) !important;
+    @include vr-frost(panel);
+    border-radius: var(--vr-radius) !important;
+    overflow: hidden !important;
+    animation: none !important;
+  }
+
+  .session-list__menu-sheet {
+    width: min(100%, 360px) !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: var(--vr-control-pad-y) var(--vr-control-pad-x) !important;
+    gap: var(--vr-stack-gap) !important;
+    @include vr-frost(panel);
+    border-radius: var(--vr-radius) !important;
+    overflow: hidden !important;
+    animation: none !important;
+  }
+
+  .session-list__picker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--vr-stack-gap);
+    margin: 0 0 var(--vr-stack-gap);
+    padding: 0 !important;
+    border: 0 !important;
+  }
+
+  .session-list__picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--vr-stack-gap);
+    max-height: calc(min(60vh, 520px) - 72px) !important;
+    padding: 0 !important;
+  }
+
+  .session-list__picker-item {
+    min-height: var(--vr-control-min-h);
+    padding: var(--vr-control-pad-y) var(--vr-control-pad-x) !important;
+  }
+
+  .session-list__menu-handle {
+    display: none;
+  }
+
+  // Pairing + global chrome: glass aligned with VR rails.
+  .pairing-page__card {
+    @include vr-frost(panel);
+  }
+
+  .pairing-page__form button,
+  .pairing-page__retry,
+  .pairing-page__error,
+  .mobile-lang-btn {
+    @include vr-frost(control);
+  }
+
+  .pairing-page__retry {
+    @include vr-frost(accent);
+  }
+
+  .pairing-page__retry--secondary {
+    @include vr-frost(control);
+  }
+
+  .pairing-page__brand,
+  .pairing-page__subtitle,
+  .pairing-page__state,
+  .pairing-page__note,
+  .pairing-page__error {
+    color: #ffffff !important;
+    text-shadow: var(--vr-label-shadow, 0 1px 2px rgba(0, 0, 0, 0.45));
+  }
+
+  // Reconnect: text-only toast band (design guide toast rules); no frost.
+  .mobile-reconnect-banner {
+    top: max(20px, env(safe-area-inset-top, 0px));
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    font-size: var(--vr-font-min) !important;
+    line-height: var(--vr-line) !important;
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    color: #ffffff !important;
+    text-shadow: var(--vr-label-shadow, 0 1px 2px rgba(0, 0, 0, 0.45));
+    animation: none !important;
+
+    button {
+      border: 0 !important;
+      background: transparent !important;
+      color: #ffffff !important;
+      font-size: var(--vr-font-min) !important;
+      text-shadow: var(--vr-label-shadow, 0 1px 2px rgba(0, 0, 0, 0.45));
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+  }
+}

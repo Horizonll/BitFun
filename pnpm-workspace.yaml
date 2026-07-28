@@ -4,6 +4,7 @@ packages:
   - "src/mobile-web"
   - "src/miniapp-market-web"
   - "src/skin-market-web"
+  - "src/glasses-web"
   - "BitFun-Installer"
   - "tests/e2e"
 

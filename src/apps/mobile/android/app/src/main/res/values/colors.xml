@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bf_white">#FFFFFFFF</color>
+    <color name="bf_muted">#E6FFFFFF</color>
+    <!-- Low APL accent fill for themed buttons (design guide §8.1). -->
+    <color name="bf_frost_accent_fill">#243DDC97</color>
+    <color name="bf_accent">#FF3DDC97</color>
+    <color name="bf_scan_ok">#FF3DDC97</color>
+</resources>

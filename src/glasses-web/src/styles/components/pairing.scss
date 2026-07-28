@@ -1,0 +1,141 @@
+@use '../motion' as motion;
+
+.pairing-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  min-height: 100dvh;
+  gap: var(--size-gap-6);
+  padding:
+    max(var(--size-gap-8), env(safe-area-inset-top, 0px))
+    max(var(--size-gap-8), env(safe-area-inset-right, 0px))
+    max(var(--size-gap-8), env(safe-area-inset-bottom, 0px))
+    max(var(--size-gap-8), env(safe-area-inset-left, 0px));
+  animation: fadeIn var(--motion-slow) motion.$easing-decelerate;
+  background: transparent;
+}
+
+.pairing-page__logo {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  margin-bottom: 4px;
+}
+
+.pairing-page__brand {
+  font-size: var(--vr-font-title, 18px);
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.pairing-page__subtitle {
+  margin: 0;
+  font-size: var(--vr-font-min, 16px);
+  line-height: var(--vr-line, 1.45);
+  color: #ffffff;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  opacity: 0.92;
+}
+
+.pairing-page__state {
+  font-size: var(--vr-font-min, 16px);
+  line-height: var(--vr-line, 1.45);
+  font-weight: 600;
+  color: #ffffff;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.pairing-page__form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pairing-page__note {
+  margin: 0;
+  font-size: var(--vr-font-min, 16px);
+  line-height: var(--vr-line, 1.45);
+  color: #ffffff;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.pairing-page__spinner-wrap {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pairing-page__error {
+  font-size: var(--vr-font-min, 16px);
+  line-height: var(--vr-line, 1.45);
+  color: #ffffff;
+  text-align: center;
+  max-width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--vr-radius, 16px);
+}
+
+.pairing-page__retry {
+  width: 100%;
+  min-height: 44px;
+  padding: 12px 16px;
+  font-size: var(--vr-font-min, 16px);
+  font-weight: 600;
+  cursor: pointer;
+  text-shadow: none;
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+.pairing-page__retry--secondary {
+  font-weight: 500;
+}
+
+// VR optical HUD: glass card aligned with side-rail controls.
+.pairing-page--vr {
+  gap: 0;
+  padding:
+    max(6vh, env(safe-area-inset-top, 0px))
+    max(24px, env(safe-area-inset-right, 0px))
+    max(6vh, env(safe-area-inset-bottom, 0px))
+    max(24px, env(safe-area-inset-left, 0px));
+  animation: none;
+
+  .pairing-page__card {
+    width: min(100%, 360px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--vr-stack-gap, 12px);
+    padding: 24px var(--vr-control-pad-x, 12px);
+    border-radius: var(--vr-radius, 16px);
+  }
+
+  .pairing-page__logo {
+    width: 48px;
+    height: 48px;
+    margin: 0;
+    animation: none;
+    opacity: 0.96;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pairing-page {
+    animation: none;
+  }
+}

@@ -25,6 +25,8 @@
     "lint:web": "pnpm --dir src/web-ui run lint",
     "lint:web:fix": "pnpm --dir src/web-ui run lint:fix",
     "type-check:mobile-web": "pnpm --dir src/mobile-web run type-check",
+    "type-check:glasses-web": "pnpm --dir src/glasses-web run type-check",
+    "build:glasses-web": "pnpm --dir src/glasses-web build",
     "i18n:generate": "node scripts/generate-i18n-contract.mjs",
     "i18n:contract:test": "node --test scripts/i18n-contract.test.mjs",
     "i18n:contract:test:ci": "cross-env BITFUN_I18N_CONTRACT_TEST_PROFILE=ci node --test scripts/i18n-contract.test.mjs",
