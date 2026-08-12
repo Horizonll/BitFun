@@ -1,6 +1,6 @@
 /** Android WebView host bridge injected as `window.BitFunGlassesHost`. */
 
-export type GlassesVoiceEventType = 'started' | 'result' | 'error' | 'ended';
+export type GlassesVoiceEventType = 'started' | 'result' | 'error' | 'ended' | 'info';
 
 export type GlassesVoiceEventHandler = (
   type: GlassesVoiceEventType,
@@ -9,15 +9,27 @@ export type GlassesVoiceEventHandler = (
 
 interface BitFunGlassesHostBridge {
   rescanQr: () => void;
+  exitApp?: () => void;
   isVoiceInputAvailable?: () => boolean | string;
   startVoiceInput?: () => void;
   stopVoiceInput?: () => void;
+  getSharedInstallId?: () => string;
+  getSharedLanguage?: () => string;
+  putSharedLanguage?: (language: string) => void;
+  takePendingAsrPcm?: (requestId: string) => string;
+  completeDesktopAsr?: (requestId: string, text: string) => void;
+  failDesktopAsr?: (requestId: string, error: string) => void;
 }
+
+export type DesktopAsrRequestHandler = (requestId: string) => void;
 
 declare global {
   interface Window {
     BitFunGlassesHost?: BitFunGlassesHostBridge;
     __bitfunOnVoiceEvent?: GlassesVoiceEventHandler;
+    __bitfunOnDesktopAsrRequest?: DesktopAsrRequestHandler;
+    /** Glasses chat: temple single-click toggles voice capture. */
+    __bitfunVoiceToggle?: () => void;
   }
 }
 
@@ -39,6 +51,20 @@ export function requestRescanQr(): boolean {
   }
   try {
     host.rescanQr();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Ask the native host to finish the activity (leave the app). */
+export function requestExitApp(): boolean {
+  const host = window.BitFunGlassesHost;
+  if (!host || typeof host.exitApp !== 'function') {
+    return false;
+  }
+  try {
+    host.exitApp();
     return true;
   } catch {
     return false;
@@ -95,6 +121,40 @@ export function stopVoiceInput(): boolean {
   }
 }
 
+/** Shared install id across activity restarts (native SharedPreferences). */
+export function getSharedInstallId(): string | null {
+  const host = window.BitFunGlassesHost;
+  if (!host || typeof host.getSharedInstallId !== 'function') return null;
+  try {
+    const value = host.getSharedInstallId()?.trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+export function getSharedLanguage(): string | null {
+  const host = window.BitFunGlassesHost;
+  if (!host || typeof host.getSharedLanguage !== 'function') return null;
+  try {
+    const value = host.getSharedLanguage()?.trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+export function putSharedLanguage(language: string): boolean {
+  const host = window.BitFunGlassesHost;
+  if (!host || typeof host.putSharedLanguage !== 'function') return false;
+  try {
+    host.putSharedLanguage(language);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Subscribe to native voice events. Replaces any previous handler.
  * Returns an unsubscribe function that clears the callback when it still owns it.
@@ -106,6 +166,49 @@ export function subscribeVoiceInput(handler: GlassesVoiceEventHandler): () => vo
       delete window.__bitfunOnVoiceEvent;
     }
   };
+}
+
+/** Subscribe to native "please transcribe this PCM on desktop" requests. */
+export function subscribeDesktopAsrRequest(handler: DesktopAsrRequestHandler): () => void {
+  window.__bitfunOnDesktopAsrRequest = handler;
+  return () => {
+    if (window.__bitfunOnDesktopAsrRequest === handler) {
+      delete window.__bitfunOnDesktopAsrRequest;
+    }
+  };
+}
+
+export function takePendingAsrPcm(requestId: string): string | null {
+  const host = window.BitFunGlassesHost;
+  if (!host || typeof host.takePendingAsrPcm !== 'function') return null;
+  try {
+    const value = host.takePendingAsrPcm(requestId)?.trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+export function completeDesktopAsr(requestId: string, text: string): boolean {
+  const host = window.BitFunGlassesHost;
+  if (!host || typeof host.completeDesktopAsr !== 'function') return false;
+  try {
+    host.completeDesktopAsr(requestId, text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function failDesktopAsr(requestId: string, error: string): boolean {
+  const host = window.BitFunGlassesHost;
+  if (!host || typeof host.failDesktopAsr !== 'function') return false;
+  try {
+    host.failDesktopAsr(requestId, error);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Append recognized speech into the composer without forcing trailing spaces twice. */

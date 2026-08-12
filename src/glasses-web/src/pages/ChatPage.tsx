@@ -52,10 +52,14 @@ import {
 import { useMobileStore } from '../services/store';
 import {
   appendVoiceTranscript,
+  completeDesktopAsr,
+  failDesktopAsr,
   isVoiceInputAvailable,
   startVoiceInput,
   stopVoiceInput,
+  subscribeDesktopAsrRequest,
   subscribeVoiceInput,
+  takePendingAsrPcm,
 } from '../services/glassesHost';
 
 function reportRemoteSessionError(
@@ -115,6 +119,19 @@ interface ChatPageProps {
   autoFocus?: boolean;
   /** Large-screen / glasses main pane presentation. */
   layout?: 'stack' | 'vr';
+  /** Show native voice controls even when layout is stack (glasses page app). */
+  enableVoice?: boolean;
+  /**
+   * RayNeo page-app chrome: outline-only controls + tool-call summaries
+   * (no filled surfaces, no expandable tool cards).
+   */
+  glassesUi?: boolean;
+}
+
+const GlassesUiContext = React.createContext(false);
+
+function useGlassesUi(): boolean {
+  return React.useContext(GlassesUiContext);
 }
 
 // ─── Markdown ───────────────────────────────────────────────────────────────
@@ -626,30 +643,32 @@ const ThinkingBlock: React.FC<{
   isLastItem?: boolean;
 }> = ({ thinking, streaming, isLastItem = false }) => {
   const { t } = useI18n();
+  const glassesUi = useGlassesUi();
   const [open, setOpen] = useState(!!streaming);
   const userToggledRef = useRef(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState({ atTop: true, atBottom: true });
-  const displayedThinking = useTypewriter(thinking, !!streaming);
+  const displayedThinking = useTypewriter(thinking, !!streaming && !glassesUi);
 
   useEffect(() => {
+    if (glassesUi) return;
     if (userToggledRef.current) return;
     if (streaming) {
       setOpen(true);
     } else if (!isLastItem) {
       setOpen(false);
     }
-  }, [streaming, isLastItem]);
+  }, [glassesUi, streaming, isLastItem]);
 
   useEffect(() => {
-    if (!streaming || !open) return;
+    if (glassesUi || !streaming || !open) return;
     const el = wrapperRef.current;
     if (!el) return;
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (gap < 80) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [displayedThinking, streaming, open]);
+  }, [glassesUi, displayedThinking, streaming, open]);
 
   const handleScroll = useCallback(() => {
     const el = wrapperRef.current;
@@ -665,6 +684,8 @@ const ThinkingBlock: React.FC<{
     setOpen(o => !o);
   }, []);
 
+  // Glasses: hide thinking entirely (tools summary + final answer only).
+  if (glassesUi) return null;
   if (!thinking && !streaming) return null;
 
   const charCount = thinking.length;
@@ -725,6 +746,7 @@ const TOOL_TYPE_MAP: Record<string, string> = {
 
 const TodoCard: React.FC<{ tool: RemoteToolStatus }> = ({ tool }) => {
   const { t } = useI18n();
+  const glassesUi = useGlassesUi();
   const [expanded, setExpanded] = useState(false);
 
   const todos: { id?: string; content: string; status: string }[] = useMemo(() => {
@@ -739,6 +761,17 @@ const TodoCard: React.FC<{ tool: RemoteToolStatus }> = ({ tool }) => {
   const completed = todos.filter(t => t.status === 'completed').length;
   const allDone = completed === todos.length;
   const inProgress = todos.find(t => t.status === 'in_progress');
+
+  if (glassesUi) {
+    const label = allDone
+      ? t('chat.allTasksCompleted')
+      : t('chat.toolsProgress', { done: completed, total: todos.length });
+    return (
+      <div className="chat-tool-summary" aria-live="polite">
+        {label}
+      </div>
+    );
+  }
 
   const statusIcon = (s: string) => {
     switch (s) {
@@ -837,13 +870,14 @@ const TaskToolCard: React.FC<{
   onCancelTool?: (toolId: string) => void;
 }> = ({ tool, now, subItems = [], onCancelTool }) => {
   const { t, language } = useI18n();
+  const glassesUi = useGlassesUi();
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(0);
   const [stepsExpanded, setStepsExpanded] = useState(false);
   const isRunning = tool.status === 'running';
   const isCompleted = tool.status === 'completed';
   const isError = tool.status === 'failed' || tool.status === 'error';
-  const showCancel = isRunning && !!onCancelTool;
+  const showCancel = isRunning && !!onCancelTool && !glassesUi;
   const taskInfo = parseTaskInfo(tool);
 
   const durationLabel = isCompleted && tool.duration_ms != null
@@ -859,11 +893,30 @@ const TaskToolCard: React.FC<{
   const subToolsRunning = subTools.filter(i => i.tool!.status === 'running').length;
 
   useEffect(() => {
+    if (glassesUi) return;
     if (stepsExpanded && subItems.length > prevCountRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
     prevCountRef.current = subItems.length;
-  }, [subItems.length, stepsExpanded]);
+  }, [glassesUi, subItems.length, stepsExpanded]);
+
+  if (glassesUi) {
+    const count = Math.max(subToolsDone, subTools.length);
+    const label = subToolsRunning > 0 || isRunning
+      ? t('chat.toolsProgress', {
+        done: subToolsDone,
+        total: Math.max(subTools.length, 1),
+      })
+      : t('chat.toolsCompleted', {
+        count,
+        suffix: getEnglishPluralSuffix(language, count),
+      });
+    return (
+      <div className="chat-tool-summary" aria-live="polite">
+        {label}
+      </div>
+    );
+  }
 
   return (
     <div className={`chat-task-card chat-task-card--${statusClass}`}>
@@ -1126,12 +1179,29 @@ function buildGroupedToolSummary(
 }
 
 const ReadFilesToggle: React.FC<{ tools: RemoteToolStatus[] }> = ({ tools }) => {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
+  const glassesUi = useGlassesUi();
   const [open, setOpen] = useState(false);
   if (tools.length === 0) return null;
 
-  const doneCount = tools.filter(t => t.status === 'completed').length;
+  const doneCount = tools.filter(tool => tool.status === 'completed').length;
+  const runningCount = tools.filter(tool => tool.status === 'running').length;
   const allDone = doneCount === tools.length;
+
+  if (glassesUi) {
+    const label = runningCount > 0 || !allDone
+      ? t('chat.toolsProgress', { done: doneCount, total: tools.length })
+      : t('chat.toolsCompleted', {
+        count: doneCount,
+        suffix: getEnglishPluralSuffix(language, doneCount),
+      });
+    return (
+      <div className="chat-tool-summary" aria-live="polite">
+        {label}
+      </div>
+    );
+  }
+
   const summary = buildGroupedToolSummary(tools, t);
   const label = allDone
     ? t('chat.readToolsDone', { summary })
@@ -1150,11 +1220,11 @@ const ReadFilesToggle: React.FC<{ tools: RemoteToolStatus[] }> = ({ tools }) => 
       {open && (
         <div className="chat-thinking__content-wrapper at-top at-bottom">
           <div className="chat-thinking__content">
-            {tools.map(t => {
-              const preview = t.input_preview || '';
+            {tools.map(tool => {
+              const preview = tool.input_preview || '';
               return (
-                <div key={t.id} style={{ fontSize: '12px', padding: '2px 0', opacity: 0.8 }}>
-                  {t.status === 'completed' ? '✓' : '⋯'} {t.name} {preview}
+                <div key={tool.id} style={{ fontSize: '12px', padding: '2px 0', opacity: 0.8 }}>
+                  {tool.status === 'completed' ? '✓' : '⋯'} {tool.name} {preview}
                 </div>
               );
             })}
@@ -1173,18 +1243,40 @@ const ToolList: React.FC<{
   onCancelTool?: (toolId: string) => void;
 }> = ({ tools, now, onCancelTool }) => {
   const { t, language } = useI18n();
+  const glassesUi = useGlassesUi();
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(0);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
+    if (glassesUi) return;
     if (expanded && tools.length > prevCountRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
     prevCountRef.current = tools.length;
-  }, [tools.length, expanded]);
+  }, [glassesUi, tools.length, expanded]);
 
   if (!tools || tools.length === 0) return null;
+
+  const runningCount = tools.filter(tool => tool.status === 'running').length;
+  const doneCount = tools.filter(tool => tool.status === 'completed').length;
+
+  if (glassesUi) {
+    const label = runningCount > 0
+      ? t('chat.toolsProgress', { done: doneCount, total: tools.length })
+      : t('chat.toolsCompleted', {
+        count: doneCount > 0 ? doneCount : tools.length,
+        suffix: getEnglishPluralSuffix(
+          language,
+          doneCount > 0 ? doneCount : tools.length,
+        ),
+      });
+    return (
+      <div className="chat-tool-summary" aria-live="polite">
+        {label}
+      </div>
+    );
+  }
 
   if (tools.length <= TOOL_LIST_COLLAPSE_THRESHOLD) {
     return (
@@ -1195,9 +1287,6 @@ const ToolList: React.FC<{
       </div>
     );
   }
-
-  const runningCount = tools.filter(t => t.status === 'running').length;
-  const doneCount = tools.filter(t => t.status === 'completed').length;
 
   return (
     <div className="chat-tool-list chat-tool-list--collapsed">
@@ -2068,6 +2157,8 @@ const ChatPage: React.FC<ChatPageProps> = ({
   onBack,
   autoFocus,
   layout = 'stack',
+  enableVoice = false,
+  glassesUi = false,
 }) => {
   const { t } = useI18n();
   const {
@@ -2107,7 +2198,16 @@ const ChatPage: React.FC<ChatPageProps> = ({
     id: string; text: string; images: { name: string; data_url: string }[];
   } | null>(null);
   const [inputExpanded, setInputExpanded] = useState(!!autoFocus);
-  const [voiceListening, setVoiceListening] = useState(false);
+  const [voicePhase, setVoicePhaseState] = useState<'idle' | 'listening' | 'recognizing'>('idle');
+  const voicePhaseLocalRef = useRef<'idle' | 'listening' | 'recognizing'>('idle');
+  const voiceListening = voicePhase !== 'idle';
+  const setVoicePhase = useCallback((phase: 'idle' | 'listening' | 'recognizing') => {
+    voicePhaseLocalRef.current = phase;
+    setVoicePhaseState(phase);
+  }, []);
+  const setVoiceListening = useCallback((listening: boolean) => {
+    setVoicePhase(listening ? 'listening' : 'idle');
+  }, [setVoicePhase]);
   const [voiceAvailable, setVoiceAvailable] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -2731,9 +2831,11 @@ const ChatPage: React.FC<ChatPageProps> = ({
 
   useEffect(() => {
     if (!isStreaming) return;
-    if (!isNearBottomRef.current) return;
+    const glassesPinned = glassesUi || layout === 'vr' || enableVoice;
+    if (!glassesPinned && !isNearBottomRef.current) return;
+    if (glassesPinned) isNearBottomRef.current = true;
     scrollMessagesToBottom('auto');
-  }, [activeTurn, isStreaming, scrollMessagesToBottom]);
+  }, [activeTurn, isStreaming, glassesUi, layout, enableVoice, scrollMessagesToBottom]);
 
   useEffect(() => {
     if (optimisticMsg) {
@@ -2775,9 +2877,9 @@ const ChatPage: React.FC<ChatPageProps> = ({
     };
   }, [isStreaming, sessionId]);
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    const imgs = pendingImages;
+  const sendChatMessage = useCallback(async (textOverride?: string) => {
+    const text = (textOverride ?? input).trim();
+    const imgs = textOverride !== undefined ? [] : pendingImages;
     if ((!text && imgs.length === 0) || imageAnalyzing) return;
     const targetEpoch = captureChatTargetEpoch();
     if (targetEpoch === null) return;
@@ -2833,6 +2935,10 @@ const ChatPage: React.FC<ChatPageProps> = ({
     }
   }, [agentMode, captureChatTargetEpoch, imageAnalyzing, input, isChatTargetCurrent, isStreaming, pendingImages, sessionId, sessionMgr, setError, t]);
 
+  const handleSend = useCallback(() => {
+    void sendChatMessage();
+  }, [sendChatMessage]);
+
   const handleImageSelect = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
@@ -2877,43 +2983,102 @@ const ChatPage: React.FC<ChatPageProps> = ({
   }, []);
 
   useEffect(() => {
-    // VR always shows the mic; availability is checked on press.
-    setVoiceAvailable(layout === 'vr');
-  }, [layout]);
+    // Glasses page app and legacy VR shell always show the mic.
+    setVoiceAvailable(layout === 'vr' || enableVoice);
+  }, [enableVoice, layout]);
+
+  // Keep voice handler stable — resubscribing on sendChatMessage identity changes
+  // previously dropped native result/ended events mid-recognition.
+  const enableVoiceRef = useRef(enableVoice);
+  enableVoiceRef.current = enableVoice;
+  const sendChatMessageRef = useRef(sendChatMessage);
+  sendChatMessageRef.current = sendChatMessage;
+  const setVoicePhaseRef = useRef(setVoicePhase);
+  setVoicePhaseRef.current = setVoicePhase;
 
   useEffect(() => {
-    if (layout !== 'vr') return;
+    if (layout !== 'vr' && !enableVoice) return;
     return subscribeVoiceInput((type, payload) => {
       if (type === 'started') {
-        setVoiceListening(true);
+        setVoicePhaseRef.current('listening');
         return;
       }
       if (type === 'result' && payload) {
+        const text = payload.trim();
+        // Glasses voice-only composer: auto-send after recognition (option A).
+        if (enableVoiceRef.current) {
+          if (text) void sendChatMessageRef.current(text);
+          return;
+        }
+        if (!text) return;
         setInput((prev) => appendVoiceTranscript(prev, payload));
         setInputExpanded(true);
         requestAnimationFrame(() => inputRef.current?.focus());
         return;
       }
+      // Ignore native debug/info chatter; status UI owns listening/recognizing copy.
+      if (type === 'info') {
+        return;
+      }
       if (type === 'error' && payload) {
         setInfoToast(payload);
+        setVoicePhaseRef.current('idle');
         return;
       }
       if (type === 'ended') {
-        setVoiceListening(false);
+        setVoicePhaseRef.current('idle');
       }
     });
-  }, [layout]);
+  }, [enableVoice, layout]);
 
+  // Primary eye: native captures PCM, SPA asks the paired desktop's current ASR.
+  const sessionMgrRef = useRef(sessionMgr);
+  sessionMgrRef.current = sessionMgr;
+  useEffect(() => {
+    if (layout !== 'vr' && !enableVoice) return;
+    return subscribeDesktopAsrRequest((requestId) => {
+      setVoicePhaseRef.current('recognizing');
+      void (async () => {
+        try {
+          const pcm16Base64 = takePendingAsrPcm(requestId);
+          if (!pcm16Base64) {
+            failDesktopAsr(requestId, '未找到待转写音频');
+            return;
+          }
+          const { text } = await sessionMgrRef.current.transcribeSpeech({
+            pcm16Base64,
+            sampleRate: 16000,
+          });
+          completeDesktopAsr(requestId, text);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          failDesktopAsr(requestId, message || '桌面语音识别失败');
+        }
+      })();
+    });
+  }, [enableVoice, layout]);
+
+  // Safety net: if native never ends a listen session, ask it to finalize.
+  useEffect(() => {
+    if (voicePhase !== 'listening') return;
+    const timer = window.setTimeout(() => {
+      if (voicePhaseLocalRef.current !== 'listening') return;
+      stopVoiceInput();
+    }, 16000);
+    return () => window.clearTimeout(timer);
+  }, [voicePhase]);
+
+  // Stop native capture only when this chat page unmounts while still listening.
   useEffect(() => {
     return () => {
-      if (voiceListening) {
+      if (voicePhaseLocalRef.current !== 'idle') {
         stopVoiceInput();
       }
     };
-  }, [voiceListening]);
+  }, []);
 
-  const handleVoiceInputToggle = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
+  const toggleVoiceInput = useCallback(() => {
     if (imageAnalyzing) {
       setInfoToast(t('chat.imageAnalyzingPlaceholder'));
       return;
@@ -2922,20 +3087,43 @@ const ChatPage: React.FC<ChatPageProps> = ({
       setInfoToast(t('chat.collapsedStreamingPlaceholder'));
       return;
     }
-    if (voiceListening) {
-      stopVoiceInput();
-      setVoiceListening(false);
+    // Ignore clicks while desktop ASR is in flight.
+    if (voicePhaseLocalRef.current === 'recognizing' || voicePhase === 'recognizing') {
       return;
     }
-    expandInput();
-    // Optimistic feedback so a slow/native permission prompt does not feel dead.
-    setVoiceListening(true);
-    setInfoToast(t('chat.voiceListening'));
+    if (voiceListening) {
+      // Keep "listening" until native `ended` so UI cannot desync into a state
+      // where SPA thinks idle while native is still listening (silent no-op).
+      stopVoiceInput();
+      return;
+    }
+    if (!enableVoice) {
+      expandInput();
+    }
+    setVoicePhase('listening');
     if (!startVoiceInput()) {
       setInfoToast(t('chat.voiceUnavailable'));
-      setVoiceListening(false);
+      setVoicePhase('idle');
     }
-  }, [expandInput, imageAnalyzing, isStreaming, t, voiceListening]);
+  }, [enableVoice, expandInput, imageAnalyzing, isStreaming, setVoicePhase, t, voiceListening, voicePhase]);
+
+  const handleVoiceInputToggle = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    toggleVoiceInput();
+  }, [toggleVoiceInput]);
+
+  // Temple single-click starts/stops voice on glasses chat (no mic button).
+  useEffect(() => {
+    if (!enableVoice) return;
+    window.__bitfunVoiceToggle = () => {
+      toggleVoiceInput();
+    };
+    return () => {
+      if (window.__bitfunVoiceToggle) {
+        delete window.__bitfunVoiceToggle;
+      }
+    };
+  }, [enableVoice, toggleVoiceInput]);
 
   useEffect(() => {
     if (autoFocus) {
@@ -3015,15 +3203,35 @@ const ChatPage: React.FC<ChatPageProps> = ({
   const gitBranch = currentWorkspace?.git_branch;
   const displayName = liveTitle || sessionName || t('chat.session');
 
+  const voiceOnlyComposer = enableVoice;
+  const glassesUiActive = glassesUi || layout === 'vr' || enableVoice;
+
+  // Glasses: new/optimistic messages always land at the bottom.
+  useEffect(() => {
+    if (!glassesUiActive || isLoadingMore) return;
+    isNearBottomRef.current = true;
+    setShowScrollToBottom(false);
+    lastShowScrollToBottomRef.current = false;
+    scrollMessagesToBottom('auto');
+  }, [
+    glassesUiActive,
+    isLoadingMore,
+    messages.length,
+    optimisticMsg,
+    scrollMessagesToBottom,
+  ]);
+
   return (
-    <div className={`chat-page${layout === 'vr' ? ' chat-page--vr' : ''}`}>
+    <GlassesUiContext.Provider value={glassesUiActive}>
+    <div className={`chat-page${layout === 'vr' ? ' chat-page--vr' : ''}${voiceOnlyComposer ? ' chat-page--voice-only' : ''}${glassesUiActive ? ' chat-page--glasses-ui' : ''}`}>
       {/* Dialogue host. Non-VR uses display:contents; VR has no outer frame/title. */}
       <div className="chat-page__dialogue">
-      {layout !== 'vr' && (
+      {layout !== 'vr' && !voiceOnlyComposer && (
         <div className="chat-page__header">
           <div className="chat-page__header-row">
             <button
               className="chat-page__back"
+              data-rayneo-focus
               onClick={onBack}
               aria-label={t('common.back')}
               title={t('common.back')}
@@ -3113,19 +3321,19 @@ const ChatPage: React.FC<ChatPageProps> = ({
             if (!hasItems && !hasContent) return null;
 
             const isOldResponse = idx < lastUserIdx;
-            const isExpanded = expandedMsgIds.has(m.id);
+            const isExpanded = glassesUiActive || expandedMsgIds.has(m.id);
 
             if (isOldResponse && !isExpanded) {
               return (
                 <div
-                    key={m.id}
-                    className={`chat-msg chat-msg--assistant chat-msg--collapsed${menuMessage?.id === m.id ? ' chat-msg--menu-active' : ''}`}
-                    onTouchStart={(e) => handleMsgTouchStart(m, e)}
-                    onTouchMove={handleMsgTouchMove}
-                    onTouchEnd={handleMsgTouchEnd}
-                    onTouchCancel={handleMsgTouchEnd}
-                    onContextMenu={(e) => { e.preventDefault(); setMenuMessage(m); }}
-                  >
+                  key={m.id}
+                  className={`chat-msg chat-msg--assistant chat-msg--collapsed${menuMessage?.id === m.id ? ' chat-msg--menu-active' : ''}`}
+                  onTouchStart={(e) => handleMsgTouchStart(m, e)}
+                  onTouchMove={handleMsgTouchMove}
+                  onTouchEnd={handleMsgTouchEnd}
+                  onTouchCancel={handleMsgTouchEnd}
+                  onContextMenu={(e) => { e.preventDefault(); setMenuMessage(m); }}
+                >
                   <button
                     className="chat-msg__response-toggle"
                     onClick={() => setExpandedMsgIds(prev => {
@@ -3155,7 +3363,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
                 onTouchCancel={handleMsgTouchEnd}
                 onContextMenu={(e) => { e.preventDefault(); setMenuMessage(m); }}
               >
-                {isOldResponse && isExpanded && (
+                {isOldResponse && isExpanded && !glassesUiActive && (
                   <button
                     className="chat-msg__response-toggle"
                     onClick={() => setExpandedMsgIds(prev => {
@@ -3210,7 +3418,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
                       handleGetFileInfo,
                     )
                   : renderOrderedItems(turn.items, now, undefined, undefined, handleFileDownload, handleGetFileInfo)}
-                {turnIsActive && !turn.thinking && !turn.text && turn.tools.length === 0 && (
+                {turnIsActive && !turn.text && turn.tools.length === 0 && (glassesUiActive || !turn.thinking) && (
                   <div className="chat-msg__assistant-content"><TypingDots /></div>
                 )}
               </div>
@@ -3226,7 +3434,9 @@ const ChatPage: React.FC<ChatPageProps> = ({
           const regularTools = turn.tools.filter(t => t.name !== 'Task' && !askToolIds.has(t.id));
           const subItemsForTask: ChatMessageItem[] = hasRunningSubagent
             ? [
-                ...(turn.thinking ? [{ type: 'thinking' as const, content: turn.thinking }] : []),
+                ...(turn.thinking && !glassesUiActive
+                  ? [{ type: 'thinking' as const, content: turn.thinking }]
+                  : []),
                 ...regularTools.map(t => ({ type: 'tool' as const, tool: t })),
               ]
             : [];
@@ -3239,7 +3449,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
 
           return (
             <div className="chat-msg chat-msg--assistant">
-              {!hasRunningSubagent && (turn.thinking || turnIsActive) && (
+              {!glassesUiActive && !hasRunningSubagent && (turn.thinking || turnIsActive) && (
                 <ThinkingBlock
                   thinking={turn.thinking}
                   streaming={turnIsActive}
@@ -3271,7 +3481,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
                     ? <TypewriterText content={turn.text} onFileDownload={handleFileDownload} onGetFileInfo={handleGetFileInfo} />
                     : <MarkdownContent content={turn.text} onFileDownload={handleFileDownload} onGetFileInfo={handleGetFileInfo} />}
                 </div>
-              ) : turnIsActive && !turn.thinking && turn.tools.length === 0 ? (
+              ) : turnIsActive && turn.tools.length === 0 && (glassesUiActive || !turn.thinking) ? (
                 <div className="chat-msg__assistant-content"><TypingDots /></div>
               ) : null}
             </div>
@@ -3379,15 +3589,33 @@ const ChatPage: React.FC<ChatPageProps> = ({
         <div className="chat-page__toast" role="alert" aria-live="assertive">{actionToast}</div>
       )}
 
-      {/* Floating Input Bar — two-stage (matches desktop ChatInput) */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
-        multiple
-        style={{ display: 'none' }}
-        onChange={handleFileChange}
-      />
+      {/* Glasses: mic-only bottom composer. Other surfaces keep the two-stage input. */}
+      {!voiceOnlyComposer && (
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
+          multiple
+          style={{ display: 'none' }}
+          onChange={handleFileChange}
+        />
+      )}
+      {voiceOnlyComposer ? (
+        <div className="chat-page__input-wrap chat-page__input-wrap--voice-only" ref={inputBarRef}>
+          <div className="chat-page__voice-stack">
+            <div
+              className={`chat-page__voice-status${voicePhase !== 'idle' ? ' is-visible is-' + voicePhase : ''}`}
+              aria-live="polite"
+            >
+              {voicePhase === 'listening'
+                ? t('chat.voiceListening')
+                : voicePhase === 'recognizing'
+                  ? t('chat.voiceRecognizing')
+                  : t('chat.voiceTapToSpeak')}
+            </div>
+          </div>
+        </div>
+      ) : (
       <div
         className={`chat-page__input-wrap ${inputExpanded ? 'is-expanded' : ''}`}
         ref={inputBarRef}
@@ -3468,10 +3696,11 @@ const ChatPage: React.FC<ChatPageProps> = ({
                   </button>
                 </>
               )}
-              {layout === 'vr' && (
+              {(layout === 'vr' || enableVoice) && (
                 <button
                   type="button"
                   className={`chat-page__action-btn chat-page__voice-btn${voiceListening ? ' is-listening' : ''}`}
+                  data-rayneo-focus
                   onClick={handleVoiceInputToggle}
                   disabled={imageAnalyzing || isStreaming}
                   aria-label={voiceListening ? t('chat.voiceStop') : t('chat.voiceInput')}
@@ -3495,6 +3724,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
                   <button
                     type="button"
                     className="chat-page__send-btn is-stop"
+                    data-rayneo-focus
                     onClick={handleCancel}
                     aria-label={t('common.stop')}
                   >
@@ -3505,6 +3735,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
                   <button
                     type="button"
                     className="chat-page__send-btn"
+                    data-rayneo-focus
                     onClick={inputExpanded ? handleSend : expandInput}
                     disabled={!input.trim() && pendingImages.length === 0}
                     aria-label={t('common.submit')}
@@ -3517,6 +3748,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
               ) : (
                 <button
                   className="chat-page__send-btn"
+                  data-rayneo-focus
                   onClick={inputExpanded ? handleSend : undefined}
                   disabled={!input.trim() && pendingImages.length === 0}
                 >
@@ -3529,6 +3761,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
           </div>
         </div>
       </div>
+      )}
 
       {error && (
         <div className="chat-page__toast" onClick={() => setError(null)}>
@@ -3541,6 +3774,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
         </div>
       )}
     </div>
+    </GlassesUiContext.Provider>
   );
 };
 

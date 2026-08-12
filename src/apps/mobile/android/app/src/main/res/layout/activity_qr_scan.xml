@@ -1,58 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Optical see-through: no camera preview, no aiming frame — title only. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent">
+    android:background="@color/bf_black">
 
-    <androidx.camera.view.PreviewView
-        android:id="@+id/previewView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
-    <View
-        android:layout_width="240dp"
-        android:layout_height="240dp"
-        android:layout_gravity="center"
-        android:background="@drawable/bg_scan_reticle" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
+    <TextView
+        android:id="@+id/scanHint"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|center_horizontal"
-        android:layout_marginHorizontal="30dp"
-        android:layout_marginTop="20dp"
-        android:gravity="center_horizontal"
-        android:orientation="vertical">
+        android:layout_gravity="center"
+        android:gravity="center"
+        android:text="@string/scan_title"
+        android:textColor="@color/bf_white"
+        android:textSize="22sp"
+        android:textStyle="bold" />
 
-        <TextView
-            android:id="@+id/scanHint"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_horizontal"
-            android:shadowColor="#99000000"
-            android:shadowDx="0"
-            android:shadowDy="1"
-            android:shadowRadius="3"
-            android:text="@string/scan_title"
-            android:textColor="@color/bf_white"
-            android:textSize="22sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/scanStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:gravity="center_horizontal"
-            android:lineSpacingExtra="2dp"
-            android:shadowColor="#99000000"
-            android:shadowDx="0"
-            android:shadowDy="1"
-            android:shadowRadius="3"
-            android:text="@string/scan_hint"
-            android:textColor="@color/bf_muted"
-            android:textSize="16sp" />
-    </LinearLayout>
+    <!-- Kept for BindingPair / permission flow; hidden unless camera access is needed. -->
+    <TextView
+        android:id="@+id/scanStatus"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
 
     <Button
         android:id="@+id/permissionButton"
@@ -65,10 +34,6 @@
         android:minHeight="0dp"
         android:paddingHorizontal="12dp"
         android:paddingVertical="8dp"
-        android:shadowColor="#99000000"
-        android:shadowDx="0"
-        android:shadowDy="1"
-        android:shadowRadius="3"
         android:text="@string/scan_grant_camera"
         android:textAllCaps="false"
         android:textColor="@color/bf_white"

@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.BitFunGlasses" parent="Theme.AppCompat.NoActionBar">
-        <item name="android:windowBackground">@android:color/transparent</item>
-        <item name="android:colorBackground">@android:color/transparent</item>
-        <item name="android:windowIsTranslucent">true</item>
+        <!-- Opaque black so the launcher app list cannot show through. -->
+        <item name="android:windowBackground">@color/bf_black</item>
+        <item name="android:colorBackground">@color/bf_black</item>
+        <item name="android:windowIsTranslucent">false</item>
         <item name="android:windowContentOverlay">@null</item>
         <item name="android:textColorPrimary">@color/bf_white</item>
         <item name="android:textColorSecondary">@color/bf_muted</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@color/bf_black</item>
+        <item name="android:navigationBarColor">@color/bf_black</item>
         <item name="colorPrimary">@color/bf_accent</item>
         <item name="colorAccent">@color/bf_accent</item>
         <item name="android:buttonStyle">@style/Widget.BitFunGlasses.Button</item>

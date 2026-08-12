@@ -333,7 +333,7 @@ const DevicesPage: React.FC<Props> = ({ client, onBack }) => {
   return (
     <div className="devices-page">
       <div className="devices-page__header">
-        <button type="button" className="devices-page__back-btn" onClick={onBack} aria-label={t('common.back')}>
+        <button type="button" className="devices-page__back-btn" data-rayneo-focus onClick={onBack} aria-label={t('common.back')}>
           <BackIcon />
         </button>
         <h2 className="devices-page__title">{t('devices.title')}</h2>

@@ -36,7 +36,8 @@ use bitfun_services_integrations::remote_connect::account::{
 };
 use bitfun_services_integrations::remote_connect::{
     deploy_page_version_on_relay, join_relay_url, list_pages_from_relay,
-    publish_page_content_on_relay,
+    publish_page_content_on_relay, set_remote_speech_transcribe_handler,
+    RemoteSpeechTranscribeRequest, RemoteSpeechTranscribeResult,
 };
 use futures::stream::{self, StreamExt};
 use regex::Regex;
@@ -46,7 +47,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Notify, RwLock};
 
 static REMOTE_CONNECT_SERVICE: OnceLock<Arc<RwLock<Option<RemoteConnectService>>>> =
@@ -1443,6 +1444,7 @@ async fn register_account_pairing_context(service: &RemoteConnectService) {
 pub fn init_on_startup() {
     register_page_deploy_host();
     register_page_publish_host();
+    register_remote_speech_transcribe_host();
     tokio::spawn(async {
         let startup_generation = account_context_generation();
         // Restore persisted account session (if any) before anything else
@@ -4488,6 +4490,129 @@ fn resolve_requested_local_workspace_path(workspace_path: Option<&str>) -> Resul
         .ok_or_else(|| "workspace_path is not valid UTF-8".to_string())
 }
 
+/// Room-channel `transcribe_speech` (glasses) hits RemoteServer::dispatch, not
+/// device RPC — register SpeechService here so that path can reach local ASR.
+fn register_remote_speech_transcribe_host() {
+    set_remote_speech_transcribe_handler(std::sync::Arc::new(|request| {
+        Box::pin(async move { run_desktop_speech_transcription(request).await })
+    }));
+}
+
+async fn run_desktop_speech_transcription(
+    request: RemoteSpeechTranscribeRequest,
+) -> Result<RemoteSpeechTranscribeResult, String> {
+    let app = account_app_handle().ok_or_else(|| {
+        "Desktop app handle unavailable for speech transcription".to_string()
+    })?;
+    let state = app.state::<crate::api::app_state::AppState>();
+    let (model, resolved_language, max_recording_seconds) = resolve_desktop_voice_asr_settings(
+        &state,
+        request.model_id.as_deref(),
+        request.language.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let session = state
+        .speech_service
+        .start_input_session(bitfun_core_types::speech::SpeechStartInputSessionRequest {
+            model_id: Some(model.clone()),
+            language: Some(resolved_language),
+            sample_rate: request.sample_rate,
+            max_recording_seconds: Some(max_recording_seconds),
+        })
+        .await
+        .map_err(|error| format!("speech start failed: {error}"))?;
+    if let Err(error) = state
+        .speech_service
+        .append_audio_chunk(bitfun_core_types::speech::SpeechAppendAudioChunkRequest {
+            session_id: session.session_id.clone(),
+            pcm16_base64: request.pcm16_base64,
+        })
+        .await
+    {
+        let _ = state
+            .speech_service
+            .cancel_input_session(bitfun_core_types::speech::SpeechCancelInputSessionRequest {
+                session_id: session.session_id.clone(),
+            })
+            .await;
+        return Err(format!("speech append failed: {error}"));
+    }
+    let result = state
+        .speech_service
+        .finish_input_session(bitfun_core_types::speech::SpeechFinishInputSessionRequest {
+            session_id: session.session_id.clone(),
+        })
+        .await
+        .map_err(|error| format!("speech finish failed: {error}"))?;
+    Ok(RemoteSpeechTranscribeResult {
+        text: result.text,
+        language: result.language,
+        duration_ms: result.duration_ms,
+        audio_duration_seconds: result.audio_duration_seconds,
+        model_id: model,
+    })
+}
+
+/// Use the same Voice Input settings as the desktop composer.
+/// Glasses only sends PCM; the host picks model/language from Settings.
+async fn resolve_desktop_voice_asr_settings(
+    state: &crate::api::app_state::AppState,
+    requested_model_id: Option<&str>,
+    requested_language: Option<&str>,
+) -> anyhow::Result<(String, String, u32)> {
+    use bitfun_core::service::config::GlobalConfig;
+
+    let global: GlobalConfig = state
+        .config_service
+        .get_config(None)
+        .await
+        .map_err(|error| anyhow::anyhow!("load desktop voice config: {error}"))?;
+    let voice = &global.app.ai_experience.voice_input;
+
+    if voice.provider.eq_ignore_ascii_case("cloud") {
+        return Err(anyhow::anyhow!(
+            "Desktop Voice Input is set to cloud; glasses needs a local ASR model \
+             in Settings → Voice Input."
+        ));
+    }
+
+    let model = requested_model_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            let configured = voice.model_id.trim();
+            (!configured.is_empty()).then(|| configured.to_string())
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No desktop Voice Input model selected. Open Settings → Voice Input \
+                 and choose a local ASR model."
+            )
+        })?;
+
+    let language = requested_language
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            let configured = voice.default_language.trim();
+            if configured.is_empty() {
+                "auto".to_string()
+            } else {
+                configured.to_string()
+            }
+        });
+
+    let max_recording_seconds = match voice.max_recording_seconds {
+        0 => 60,
+        n => n.min(120),
+    };
+
+    Ok((model, language, max_recording_seconds))
+}
+
 /// Execute a RemoteCommand locally (for RPC requests from other devices).
 /// Returns the RemoteResponse serialized as JSON to be encrypted and sent back.
 async fn execute_local_remote_command(
@@ -4496,6 +4621,29 @@ async fn execute_local_remote_command(
     use bitfun_core::service::remote_connect::remote_server::{RemoteCommand, RemoteResponse};
 
     match cmd {
+        RemoteCommand::TranscribeSpeech {
+            pcm16_base64,
+            sample_rate,
+            model_id,
+            language,
+        } => {
+            let result = run_desktop_speech_transcription(RemoteSpeechTranscribeRequest {
+                pcm16_base64: pcm16_base64.clone(),
+                sample_rate: *sample_rate,
+                model_id: model_id.clone(),
+                language: language.clone(),
+            })
+            .await
+            .map_err(anyhow::Error::msg)?;
+            return serde_json::to_value(RemoteResponse::SpeechTranscription {
+                text: result.text,
+                language: result.language,
+                duration_ms: result.duration_ms,
+                audio_duration_seconds: result.audio_duration_seconds,
+                model_id: result.model_id,
+            })
+            .map_err(|e| anyhow::anyhow!("serialize response: {e}"));
+        }
         RemoteCommand::HostInvoke { command, args } => {
             // Detached jobs are independent of Peer controller attachment.
             // Route their distinct target command family directly to the

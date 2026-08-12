@@ -43,13 +43,13 @@ export interface SessionListVrHosts {
 interface SessionListPageProps {
   sessionMgr: RemoteSessionManager;
   onSelectSession: (sessionId: string, sessionName?: string, isNew?: boolean) => void;
-  /** Highlight the open chat session in VR shell. */
+  /** Highlight the open chat session. */
   selectedSessionId?: string | null;
   /**
-   * Sessions and controls are portaled into the left/right HUD hosts
-   * (single data owner, no duplicate loaders).
+   * Optional legacy HUD portals. When omitted, render as a full page body
+   * (glasses BindingPair page-app).
    */
-  vrHosts: SessionListVrHosts;
+  vrHosts?: SessionListVrHosts;
 }
 
 type SessionListTargetOwner = {
@@ -263,7 +263,8 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
   selectedSessionId = null,
   vrHosts,
 }) => {
-  const listPageSize = VR_SESSION_CAP;
+  const pageMode = !vrHosts;
+  const listPageSize = pageMode ? 40 : VR_SESSION_CAP;
   const { t, formatDate } = useI18n();
   const {
     sessions,
@@ -346,7 +347,8 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
   };
 
   const handleSessionTouchStart = useCallback((s: SessionInfo, e: React.TouchEvent) => {
-    if (deleting || renaming) return;
+    // Glasses page mode: tap opens chat only — no rename/delete long-press.
+    if (pageMode || deleting || renaming) return;
     clearLongPressTimer();
     longPressTriggeredRef.current = false;
     longPressPosRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -355,7 +357,7 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
       setMenuSession(s);
       longPressTimerRef.current = undefined;
     }, 500);
-  }, [deleting, renaming]);
+  }, [deleting, pageMode, renaming]);
 
   const handleSessionTouchMove = useCallback((e: React.TouchEvent) => {
     const dx = Math.abs(e.touches[0].clientX - longPressPosRef.current.x);
@@ -678,31 +680,22 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
       try {
         const info = await sessionMgr.getWorkspaceInfo();
         if (!isInitCurrent()) return;
-        if (info.workspace_kind === 'assistant' && info.path) {
-          setCurrentAssistant({
-            path: info.path,
-            name: info.project_name ?? 'Claw',
-            assistant_id: info.assistant_id,
-          });
-          setCurrentWorkspace(null);
-          setDisplayMode('assistant');
-          initLoadedPathRef.current = info.path;
-          await loadFirstPage(info.path);
-        } else {
-          setDisplayMode('pro');
-          const ws = info.has_workspace ? info : null;
+        // Glasses companion always uses Expert/pro workspaces.
+        setDisplayMode('pro');
+        setCurrentAssistant(null);
+        if (info.has_workspace && info.workspace_kind !== 'assistant' && info.path) {
+          const ws = info;
           setCurrentWorkspace(ws);
-          if (ws?.path) {
-            initLoadedPathRef.current = ws.path;
-            await loadWorkspaceList();
-            if (!isInitCurrent()) return;
-            await loadFirstPage(ws.path, '', {
-              remoteConnectionId: ws.remote_connection_id,
-              remoteSshHost: ws.remote_ssh_host,
-            });
-          } else {
-            await trySelectFirstProWorkspace();
-          }
+          initLoadedPathRef.current = ws.path;
+          await loadWorkspaceList();
+          if (!isInitCurrent()) return;
+          await loadFirstPage(ws.path, '', {
+            remoteConnectionId: ws.remote_connection_id,
+            remoteSshHost: ws.remote_ssh_host,
+          });
+        } else {
+          setCurrentWorkspace(null);
+          await trySelectFirstProWorkspace();
         }
       } catch (e: any) {
         if (isInitCurrent() && !isRemoteControlTargetChangedError(e)) setError(e.message);
@@ -831,12 +824,7 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
       if (!isSessionListCurrent(targetEpoch)) return;
       await loadFirstPage(workspacePath, searchQuery, identity);
       if (!isSessionListCurrent(targetEpoch)) return;
-      const label = isClawAgent(agentType)
-        ? t('sessions.remoteClawSession')
-        : isCoworkAgent(agentType)
-          ? t('sessions.remoteCoworkSession')
-          : t('sessions.remoteCodeSession');
-      onSelectSession(id, label, true);
+      onSelectSession(id, t('sessions.untitledSession'), true);
     } catch (e: any) {
       if (isSessionListCurrent(targetEpoch) && !isRemoteControlTargetChangedError(e)) {
         setError(e.message);
@@ -914,13 +902,20 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
   }, [captureSessionListEpoch, isSessionListCurrent, loadFirstPage, searchQuery, sessionMgr, setCurrentAssistant, setError]);
 
   const assistantDisplayName = currentAssistant?.name || t('shared.agents.default');
-  const isProMode = displayMode === 'pro';
+  // Glasses page mode always shows a flat history list (no workspace tree chrome).
+  const isProMode = !pageMode && displayMode === 'pro';
   const leftWorkspaces = isProMode
-    ? visibleProWorkspaces(workspaceList, currentWorkspace, VR_WORKSPACE_CAP)
+    ? visibleProWorkspaces(
+      workspaceList,
+      currentWorkspace,
+      VR_WORKSPACE_CAP,
+    )
     : [];
-  const nestedSessionCap = isProMode
-    ? Math.max(1, VR_LEFT_ROW_CAP - leftWorkspaces.length)
-    : VR_SESSION_CAP;
+  const nestedSessionCap = pageMode
+    ? 40
+    : isProMode
+      ? Math.max(1, VR_LEFT_ROW_CAP - leftWorkspaces.length)
+      : VR_SESSION_CAP;
   const visibleSessions = sessions.slice(0, nestedSessionCap);
 
   const renderSessionCard = (s: SessionInfo, nested = false) => (
@@ -932,22 +927,20 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
         menuSession?.session_id === s.session_id ? 'session-list__item--active' : '',
         selectedSessionId === s.session_id ? 'session-list__item--selected' : '',
       ].filter(Boolean).join(' ')}
+      data-rayneo-focus
       onClick={(e) => handleSessionClick(s, e)}
       onTouchStart={(e) => handleSessionTouchStart(s, e)}
       onTouchMove={handleSessionTouchMove}
       onTouchEnd={handleSessionTouchEnd}
       onTouchCancel={handleSessionTouchEnd}
-      onContextMenu={(e) => { e.preventDefault(); setMenuSession(s); }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (!pageMode) setMenuSession(s);
+      }}
     >
-      <div className={`session-list__item-icon session-list__item-icon--${s.agent_type}`}>
-        <SessionTypeIcon agentType={s.agent_type} />
-      </div>
       <div className="session-list__item-body">
         <div className="session-list__item-top">
           <div className="session-list__item-name">{s.name || t('sessions.untitledSession')}</div>
-          <span className={`session-list__agent-badge session-list__agent-badge--${s.agent_type}`}>
-            {agentLabel(s.agent_type, t)}
-          </span>
         </div>
         <div className="session-list__item-time">{formatTime(s.updated_at, formatDate, t)}</div>
       </div>
@@ -957,21 +950,24 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
   // Re-render after HUD hosts mount so portals can attach.
   const [, setVrHostTick] = useState(0);
   useLayoutEffect(() => {
+    if (!vrHosts) return;
     setVrHostTick((n) => n + 1);
-  }, [vrHosts, vrHosts.sessions.current, vrHosts.controls.current]);
+  }, [vrHosts, vrHosts?.sessions.current, vrHosts?.controls.current]);
 
   const sessionsPane = (
     <div className="session-list__vr-sessions">
-      <div className="session-list__section-head">
-        <div className="session-list__section-title">
-          {isProMode ? t('shared.features.workspace') : t('sessions.sessionHistory')}
+      {!pageMode && (
+        <div className="session-list__section-head">
+          <div className="session-list__section-title">
+            {isProMode ? t('shared.features.workspace') : t('sessions.sessionHistory')}
+          </div>
+          <div className="session-list__section-meta">
+            {t('common.itemCount', {
+              count: isProMode ? leftWorkspaces.length : visibleSessions.length,
+            })}
+          </div>
         </div>
-        <div className="session-list__section-meta">
-          {t('common.itemCount', {
-            count: isProMode ? leftWorkspaces.length : visibleSessions.length,
-          })}
-        </div>
-      </div>
+      )}
       {isProMode ? (
         <>
           {(loading || targetInitializing) && leftWorkspaces.length === 0 && (
@@ -1039,81 +1035,15 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
 
   const controlsPane = (
     <div className="session-list__vr-controls">
-      <div className="session-list__mode-toggle">
-        <button
-          className={`session-list__mode-toggle-btn ${isProMode ? 'is-active' : ''}`}
-          onClick={() => handleSelectMode('pro')}
-          disabled={targetInitializing}
-        >
-          <ProModeIcon />
-          <span>{t('shared.modes.expert')}</span>
-        </button>
-        <button
-          className={`session-list__mode-toggle-btn ${!isProMode ? 'is-active' : ''}`}
-          onClick={() => handleSelectMode('assistant')}
-          disabled={targetInitializing}
-        >
-          <AssistantModeIcon />
-          <span>{t('shared.modes.assistant')}</span>
-        </button>
-      </div>
-
-      {!isProMode && (
-        <div
-          className="session-list__assistant-bar"
-          onClick={() => {
-            if (targetInitializingRef.current) return;
-            loadAssistantList();
-            setShowAssistantPicker(true);
-          }}
-        >
-          <span className="session-list__assistant-icon">
-            <AssistantModeIcon />
-          </span>
-          <div className="session-list__assistant-copy">
-            <span className="session-list__assistant-label">{t('sessions.assistant')}</span>
-            <span className="session-list__assistant-name">{assistantDisplayName}</span>
-          </div>
-        </div>
-      )}
-
-      <div className="session-list__create-row session-list__create-row--compact">
-        {isProMode ? (
-          <>
-            <button
-              className="session-list__create-btn session-list__create-btn--code"
-              onClick={() => handleCreate('code')}
-              disabled={creating || targetInitializing || !currentWorkspace}
-            >
-              <div className="session-list__create-icon">
-                <SessionTypeIcon agentType="code" />
-              </div>
-              <span className="session-list__create-title">{t('shared.agents.code')}</span>
-            </button>
-            <button
-              className="session-list__create-btn session-list__create-btn--cowork"
-              onClick={() => handleCreate('cowork')}
-              disabled={creating || targetInitializing || !currentWorkspace}
-            >
-              <div className="session-list__create-icon">
-                <SessionTypeIcon agentType="cowork" />
-              </div>
-              <span className="session-list__create-title">{t('shared.agents.cowork')}</span>
-            </button>
-          </>
-        ) : (
-          <button
-            className="session-list__create-btn session-list__create-btn--claw"
-            onClick={() => handleCreate('claw')}
-            disabled={creating || targetInitializing}
-          >
-            <div className="session-list__create-icon">
-              <SessionTypeIcon agentType="claw" />
-            </div>
-            <span className="session-list__create-title">{t('sessions.clawSession')}</span>
-          </button>
-        )}
-      </div>
+      <button
+        type="button"
+        className="session-list__create-btn session-list__create-btn--plain"
+        data-rayneo-focus
+        onClick={() => handleCreate('code')}
+        disabled={creating || targetInitializing || !currentWorkspace}
+      >
+        {creating ? '...' : t('sessions.newCodeSession')}
+      </button>
     </div>
   );
 
@@ -1151,12 +1081,10 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
     </>
   );
 
-  const sessionsHost = vrHosts.sessions.current;
-  const controlsHost = vrHosts.controls.current;
-  return (
+  const sessionsHost = vrHosts?.sessions.current ?? null;
+  const controlsHost = vrHosts?.controls.current ?? null;
+  const dialogs = (
     <>
-      {sessionsHost ? createPortal(sessionsPane, sessionsHost) : null}
-      {controlsHost ? createPortal(controlsPane, controlsHost) : null}
       {pickerOverlays}
       {/* Context Menu Bottom Sheet */}
       {menuSession && !renameTarget && !deleteConfirmTarget && (
@@ -1280,6 +1208,27 @@ const SessionListPage: React.FC<SessionListPageProps> = ({
       {actionToast && (
         <div className="session-list__toast" role="alert" aria-live="assertive">{actionToast}</div>
       )}
+    </>
+  );
+
+  if (pageMode) {
+    return (
+      <div className="session-list session-list--page">
+        <div className="session-list__page-scroll">
+          {sessionsPane}
+        </div>
+        <div className="session-list__page-controls">
+          {controlsPane}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {sessionsHost ? createPortal(sessionsPane, sessionsHost) : null}
+      {controlsHost ? createPortal(controlsPane, controlsHost) : null}
+      {dialogs}
     </>
   );
 };

@@ -2,7 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../i18n';
 import { RelayHttpClient } from '../services/RelayHttpClient';
 import { RemoteSessionManager } from '../services/RemoteSessionManager';
-import { requestRescanQr } from '../services/glassesHost';
+import {
+  getSharedInstallId,
+  requestRescanQr,
+} from '../services/glassesHost';
 import { useMobileStore } from '../services/store';
 import logoIcon from '../assets/Logo-ICON.png';
 
@@ -56,6 +59,11 @@ function generateInstallId(): string {
 }
 
 function getOrCreateInstallId(): string {
+  const shared = getSharedInstallId();
+  if (shared) {
+    localStorage.setItem(MOBILE_INSTALL_ID_KEY, shared);
+    return shared;
+  }
   const existing = localStorage.getItem(MOBILE_INSTALL_ID_KEY)?.trim();
   if (existing) return existing;
   const created = generateInstallId();
@@ -97,6 +105,81 @@ function resolvePairingTarget(): {
   };
 }
 
+function applyInitialSyncToStore(initialSync: any): void {
+  const store = useMobileStore.getState();
+  // Glasses companion is Expert/pro only — ignore assistant pair payloads.
+  store.setPairedDisplayMode('pro');
+  store.setCurrentAssistant(null);
+  if (
+    initialSync?.has_workspace
+    && initialSync.workspace_kind !== 'assistant'
+    && initialSync.path
+  ) {
+    store.setCurrentWorkspace({
+      has_workspace: true,
+      path: initialSync.path,
+      project_name: initialSync.project_name,
+      git_branch: initialSync.git_branch,
+      workspace_kind: initialSync.workspace_kind,
+      assistant_id: initialSync.assistant_id,
+      remote_connection_id: initialSync.remote_connection_id,
+      remote_ssh_host: initialSync.remote_ssh_host,
+    });
+  } else {
+    store.setCurrentWorkspace(null);
+  }
+  if (initialSync?.sessions) {
+    store.setSessions(initialSync.sessions);
+  }
+}
+
+async function maybeRequestDelegatedIdentity(
+  client: RelayHttpClient,
+  isCurrentAttempt: () => boolean,
+): Promise<void> {
+  try {
+    const delegated = await Promise.race<boolean>([
+      client.requestDelegatedIdentity(),
+      new Promise<boolean>((resolve) => {
+        window.setTimeout(() => resolve(false), 10_000);
+      }),
+    ]);
+    if (!isCurrentAttempt()) return;
+    const homeDeviceId = client.homeDeviceId;
+    if (delegated && homeDeviceId) {
+      useMobileStore.getState().setControlTarget({
+        deviceId: homeDeviceId,
+        deviceName: null,
+        isHome: true,
+      });
+      const accountEpoch = client.delegatedAccountEpoch;
+      const target = client.getControlTargetSnapshot();
+      void client
+        .listDevices()
+        .then((devices) => {
+          if (
+            client.delegatedAccountEpoch !== accountEpoch
+            || !client.isControlTargetCurrent(target)
+            || client.pairedDeviceId !== homeDeviceId
+          ) return;
+          const home = devices.find((d) => d.device_id === homeDeviceId);
+          if (home) {
+            useMobileStore.getState().setControlTarget({
+              deviceId: homeDeviceId,
+              deviceName: home.device_name,
+              isHome: true,
+            });
+          }
+        })
+        .catch(() => {
+          // Device name resolution is cosmetic; ignore failures.
+        });
+    }
+  } catch {
+    // Single-device pairing without delegation is normal.
+  }
+}
+
 const PairingPage: React.FC<PairingPageProps> = ({ onPaired }) => {
   const { t } = useI18n();
   const {
@@ -113,12 +196,30 @@ const PairingPage: React.FC<PairingPageProps> = ({ onPaired }) => {
 
   const pairingTarget = useMemo(() => resolvePairingTarget(), []);
 
+  const finishPaired = useCallback(
+    async (
+      client: RelayHttpClient,
+      initialSync: any,
+      isCurrentAttempt: () => boolean,
+    ) => {
+      setConnectionStatus('paired');
+      localStorage.setItem(MOBILE_USER_ID_KEY, GLASSES_USER_ID);
+      setAuthenticatedUserId(initialSync?.authenticated_user_id ?? GLASSES_USER_ID);
+      applyInitialSyncToStore(initialSync);
+      await maybeRequestDelegatedIdentity(client, isCurrentAttempt);
+      if (!isCurrentAttempt()) return;
+      onPairedRef.current(client, new RemoteSessionManager(client));
+    },
+    [setAuthenticatedUserId, setConnectionStatus],
+  );
+
   const attemptPair = useCallback(async () => {
+    const attemptGeneration = ++pairAttemptGenerationRef.current;
+    const isCurrentAttempt = () => pairAttemptGenerationRef.current === attemptGeneration;
+
     const roomId = pairingTarget.room;
     const desktopPublicKey = pairingTarget.pk;
     const currentInstallId = getOrCreateInstallId();
-    const attemptGeneration = ++pairAttemptGenerationRef.current;
-    const isCurrentAttempt = () => pairAttemptGenerationRef.current === attemptGeneration;
 
     if (pairingTarget.accountAuth) {
       if (!isCurrentAttempt()) return;
@@ -148,80 +249,7 @@ const PairingPage: React.FC<PairingPageProps> = ({ onPaired }) => {
         mobileInstallId: currentInstallId,
       });
       if (!isCurrentAttempt()) return;
-
-      setConnectionStatus('paired');
-      localStorage.setItem(MOBILE_USER_ID_KEY, GLASSES_USER_ID);
-      setAuthenticatedUserId(initialSync.authenticated_user_id ?? GLASSES_USER_ID);
-
-      const sessionMgr = new RemoteSessionManager(client);
-      const store = useMobileStore.getState();
-      if (initialSync.has_workspace) {
-        if (initialSync.workspace_kind === 'assistant' && initialSync.path) {
-          store.setPairedDisplayMode('assistant');
-          store.setCurrentAssistant({
-            path: initialSync.path,
-            name: initialSync.project_name ?? 'Claw',
-            assistant_id: initialSync.assistant_id,
-          });
-          store.setCurrentWorkspace(null);
-        } else {
-          store.setPairedDisplayMode('pro');
-          store.setCurrentWorkspace({
-            has_workspace: true,
-            path: initialSync.path,
-            project_name: initialSync.project_name,
-            git_branch: initialSync.git_branch,
-            workspace_kind: initialSync.workspace_kind,
-            assistant_id: initialSync.assistant_id,
-            remote_connection_id: initialSync.remote_connection_id,
-            remote_ssh_host: initialSync.remote_ssh_host,
-          });
-        }
-      }
-      if (initialSync.sessions) {
-        store.setSessions(initialSync.sessions);
-      }
-
-      try {
-        const delegated = await Promise.race<boolean>([
-          client.requestDelegatedIdentity(),
-          new Promise<boolean>((resolve) => {
-            window.setTimeout(() => resolve(false), 10_000);
-          }),
-        ]);
-        if (!isCurrentAttempt()) return;
-        const homeDeviceId = client.homeDeviceId;
-        if (delegated && homeDeviceId) {
-          store.setControlTarget({ deviceId: homeDeviceId, deviceName: null, isHome: true });
-          const accountEpoch = client.delegatedAccountEpoch;
-          const target = client.getControlTargetSnapshot();
-          void client
-            .listDevices()
-            .then((devices) => {
-              if (
-                client.delegatedAccountEpoch !== accountEpoch
-                || !client.isControlTargetCurrent(target)
-                || client.pairedDeviceId !== homeDeviceId
-              ) return;
-              const home = devices.find((d) => d.device_id === homeDeviceId);
-              if (home) {
-                useMobileStore.getState().setControlTarget({
-                  deviceId: homeDeviceId,
-                  deviceName: home.device_name,
-                  isHome: true,
-                });
-              }
-            })
-            .catch(() => {
-              // Device name resolution is cosmetic; ignore failures.
-            });
-        }
-      } catch {
-        // Single-device pairing without delegation is normal.
-      }
-
-      if (!isCurrentAttempt()) return;
-      onPairedRef.current(client, sessionMgr);
+      await finishPaired(client, initialSync, isCurrentAttempt);
     } catch (e: unknown) {
       if (!isCurrentAttempt()) return;
       const rawErrorMessage = e instanceof Error ? e.message : '';
@@ -238,11 +266,11 @@ const PairingPage: React.FC<PairingPageProps> = ({ onPaired }) => {
       setConnectionStatus('error');
     }
   }, [
+    finishPaired,
     pairingTarget.accountAuth,
     pairingTarget.httpBaseUrl,
     pairingTarget.pk,
     pairingTarget.room,
-    setAuthenticatedUserId,
     setConnectionStatus,
     setError,
     t,
@@ -261,18 +289,12 @@ const PairingPage: React.FC<PairingPageProps> = ({ onPaired }) => {
     paired: t('pairing.pairedLoadingSessions'),
     error: t('pairing.connectionError'),
   };
-  const showSpinner = connectionStatus === 'pairing' || connectionStatus === 'idle';
-
   return (
     <div className="pairing-page pairing-page--vr">
       <div className="pairing-page__card">
         <img src={logoIcon} alt="BitFun" className="pairing-page__logo" />
         <div className="pairing-page__brand">{t('pairing.title')}</div>
         <div className="pairing-page__subtitle">{t('pairing.subtitle')}</div>
-
-        <div className="pairing-page__spinner-wrap">
-          {showSpinner && <div className="spinner" />}
-        </div>
 
         <div className="pairing-page__state">
           {stateLabels[connectionStatus] || connectionStatus}
@@ -284,6 +306,7 @@ const PairingPage: React.FC<PairingPageProps> = ({ onPaired }) => {
             <button
               className="pairing-page__retry"
               type="button"
+              data-rayneo-focus
               onClick={() => {
                 setError(null);
                 setConnectionStatus('pairing');
@@ -295,6 +318,7 @@ const PairingPage: React.FC<PairingPageProps> = ({ onPaired }) => {
             <button
               className="pairing-page__retry pairing-page__retry--secondary"
               type="button"
+              data-rayneo-focus
               onClick={() => {
                 if (!requestRescanQr()) {
                   setError(t('pairing.qrExpired'));

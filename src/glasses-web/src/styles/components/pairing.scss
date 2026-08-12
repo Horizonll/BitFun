@@ -105,14 +105,15 @@
   font-weight: 500;
 }
 
-// VR optical HUD: glass card aligned with side-rail controls.
+// Glasses page-app pairing: solid black (cover launcher under BindingPair).
 .pairing-page--vr {
   gap: 0;
+  background: #000000;
   padding:
-    max(6vh, env(safe-area-inset-top, 0px))
-    max(24px, env(safe-area-inset-right, 0px))
-    max(6vh, env(safe-area-inset-bottom, 0px))
-    max(24px, env(safe-area-inset-left, 0px));
+    max(clamp(20px, 3.5vh, 28px), env(safe-area-inset-top, 0px))
+    max(clamp(20px, 3.5vh, 28px), env(safe-area-inset-right, 0px))
+    max(clamp(20px, 3.5vh, 28px), env(safe-area-inset-bottom, 0px))
+    max(clamp(20px, 3.5vh, 28px), env(safe-area-inset-left, 0px));
   animation: none;
 
   .pairing-page__card {

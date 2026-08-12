@@ -5,16 +5,11 @@ import android.content.res.Configuration
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
-import com.bitfun.glasses.BuildConfig
 import kotlin.math.roundToInt
 
 /**
- * Phone-debug helper: treat the phone as a small window onto the glasses VR
- * canvas. Layout at a larger logical size, then scale the WebView down so the
- * dual-pane AR shell fits.
- *
- * Enabled only for debug builds that use `:mercury-stub` (no vendor AAR).
- * Real glasses builds with the vendor Mercury AAR are never scaled.
+ * Retired phone-debug scale helper. Real glasses builds never scale; layout
+ * math remains for unit tests.
  */
 object PhonePreviewScale {
     /**
@@ -23,8 +18,12 @@ object PhonePreviewScale {
      */
     const val FACTOR = 0.55f
 
+    /**
+     * Phone simulation scale is retired — real glasses builds never scale.
+     * Kept only so unit tests can exercise layout math when forced on.
+     */
     val enabled: Boolean
-        get() = BuildConfig.DEBUG && !BuildConfig.USE_VENDOR_MERCURY
+        get() = false
 
     data class ScaledWebViewLayout(
         val widthPx: Int,

@@ -182,6 +182,7 @@ export const useMobileStore = create<MobileStore>((set, get) => ({
   resetConnectionState: () =>
     set({
       connectionStatus: 'idle',
+      connectionHealth: 'unpaired',
       currentWorkspace: null,
       currentAssistant: null,
       pairedDisplayMode: null,

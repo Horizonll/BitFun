@@ -22,6 +22,7 @@ function pingWithTimeout(mgr: RemoteSessionManager, ms: number): Promise<void> {
   });
 }
 
+/** Track Desktop reachability for the paired glasses SPA. */
 export function useConnectionHealth(sessionMgr: RemoteSessionManager | null) {
   const setConnectionHealth = useMobileStore((s) => s.setConnectionHealth);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();

@@ -21,6 +21,7 @@ pub mod qr_generator;
 pub mod relay_client;
 mod relay_http;
 pub mod session_store;
+mod speech_host;
 pub mod sync_state;
 
 use bitfun_core_types::{ModelsDevReasoningCatalog, ProviderCatalog, ReasoningCatalogProjection};
@@ -63,6 +64,10 @@ pub use pairing::{PairingChallenge, PairingProtocol, PairingResponse, PairingSta
 pub use qr_generator::QrGenerator;
 pub use relay_client::{
     ensure_rustls_crypto_provider, ConnectionState, RelayClient, RelayEvent, RelayMessage,
+};
+pub use speech_host::{
+    set_remote_speech_transcribe_handler, RemoteSpeechTranscribeHandler,
+    RemoteSpeechTranscribeRequest, RemoteSpeechTranscribeResult,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -2279,6 +2284,21 @@ pub enum RemoteCommand {
         request_id: String,
     },
     Ping,
+    /// One-shot local speech transcription on the paired desktop host.
+    /// Used by glasses remote control: capture PCM on-device, then transcribe
+    /// with the desktop Voice Input local ASR selection (not Peer HostInvoke).
+    /// When `model_id` / `language` are omitted, the host uses its current
+    /// Settings → Voice Input configuration.
+    TranscribeSpeech {
+        /// Base64-encoded PCM16 little-endian mono audio.
+        pcm16_base64: String,
+        #[serde(default)]
+        sample_rate: Option<u32>,
+        #[serde(default)]
+        model_id: Option<String>,
+        #[serde(default)]
+        language: Option<String>,
+    },
 
     // ── Device-to-device distributed control ──────────────────────────────
     //
@@ -2496,6 +2516,14 @@ pub enum RemoteResponse {
     },
     /// Event already delivered out-of-band; ack only.
     DeviceEventAccepted,
+    /// Result of [RemoteCommand::TranscribeSpeech].
+    SpeechTranscription {
+        text: String,
+        language: String,
+        duration_ms: u64,
+        audio_duration_seconds: f64,
+        model_id: String,
+    },
     /// Delegated account identity for a paired room-channel client.
     /// `master_key` is base64-encoded; `device_id` is the delegating host.
     DelegateIdentity {
@@ -2565,6 +2593,24 @@ where
 {
     match command {
         RemoteCommand::Ping => RemoteResponse::Pong,
+
+        // Room-channel glasses ASR: desktop registers SpeechService via
+        // set_remote_speech_transcribe_handler. Surfaces without a handler
+        // keep the clear unavailable error.
+        RemoteCommand::TranscribeSpeech {
+            pcm16_base64,
+            sample_rate,
+            model_id,
+            language,
+        } => {
+            speech_host::dispatch_remote_speech_transcribe(
+                pcm16_base64.clone(),
+                *sample_rate,
+                model_id.clone(),
+                language.clone(),
+            )
+            .await
+        }
 
         RemoteCommand::GetWorkspaceInfo
         | RemoteCommand::ListRecentWorkspaces

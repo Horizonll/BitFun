@@ -6,17 +6,24 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 16 kHz mono PCM16 capture for HiAI [AsrRecognizer.writePcm].
+ * RayNeo X3 wearer-only mic capture for ASR (16 kHz mono PCM16).
  *
- * Phone-first: use standard [MediaRecorder.AudioSource.VOICE_RECOGNITION].
- * On RayNeo X3, also set `audio_source_record=VOICE_RECOGNITION` and prefer
- * the `SPEAKER_MIC` input device per vendor docs.
+ * Matches vendor ExampleRecordRecognition:
+ * - AudioRecord source = [MediaRecorder.AudioSource.VOICE_RECOGNITION]
+ * - setParameters("audio_source_record=voice_recognition")
+ * - preferred device = SPEAKER_MIC (by product/address name; id=23 is only a hint)
+ * - release with setParameters("audio_source_record=off")
+ *
+ * If forced preferred-device routing yields near-silence, automatically reopen
+ * on the default route so recognition is not stuck at peak=0.
  */
 class VoicePcmCapture(
     context: Context,
@@ -26,45 +33,26 @@ class VoicePcmCapture(
     private val appContext = context.applicationContext
     private val audioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    private val rayNeoDevice = isRayNeoDevice()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val running = AtomicBoolean(false)
+    private val peakLifetime = AtomicInteger(0)
     private var record: AudioRecord? = null
     private var worker: Thread? = null
     private var rayNeoModeApplied = false
+    private var usingPreferredDevice = false
 
     fun start(): Boolean {
         if (!running.compareAndSet(false, true)) return true
+        peakLifetime.set(0)
         return try {
-            if (rayNeoDevice) {
-                audioManager.setParameters(PARAM_VOICE_RECOGNITION)
-                rayNeoModeApplied = true
-                Log.i(TAG, "RayNeo mic mode: $PARAM_VOICE_RECOGNITION")
-            } else {
-                Log.i(TAG, "Phone mic mode: standard VOICE_RECOGNITION AudioRecord")
-            }
-            val created = createAudioRecord()
-            if (created.state != AudioRecord.STATE_INITIALIZED) {
+            audioManager.setParameters(PARAM_VOICE_RECOGNITION)
+            rayNeoModeApplied = true
+            Log.i(TAG, "RayNeo mic mode: $PARAM_VOICE_RECOGNITION")
+
+            if (!openAndStart(preferSpeakerMic = true)) {
                 running.set(false)
-                releaseRecordQuietly(created)
                 releaseRayNeoMicMode()
-                onCaptureError("AudioRecord init failed")
                 return false
-            }
-            if (rayNeoDevice) {
-                preferSpeakerMic(created)
-            }
-            created.startRecording()
-            if (created.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                running.set(false)
-                releaseRecordQuietly(created)
-                releaseRayNeoMicMode()
-                onCaptureError("AudioRecord start failed")
-                return false
-            }
-            record = created
-            worker = Thread({ captureLoop(created) }, "BitFunVoicePcm").also {
-                it.isDaemon = true
-                it.start()
             }
             true
         } catch (error: Exception) {
@@ -84,11 +72,16 @@ class VoicePcmCapture(
         stopInternal()
     }
 
+    /** Peak absolute PCM16 sample seen since start (0..32767). */
+    fun maxPeak(): Int = peakLifetime.get()
+
     private fun stopInternal() {
         val current = record
         record = null
         try {
-            current?.stop()
+            if (current?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                current.stop()
+            }
         } catch (_: Exception) {
         }
         releaseRecordQuietly(current)
@@ -98,14 +91,90 @@ class VoicePcmCapture(
         }
         worker = null
         releaseRayNeoMicMode()
+        Log.i(TAG, "PCM stopped maxPeak=${peakLifetime.get()} preferred=$usingPreferredDevice")
+    }
+
+    private fun openAndStart(preferSpeakerMic: Boolean): Boolean {
+        val created = createAudioRecord()
+        usingPreferredDevice = false
+        if (preferSpeakerMic) {
+            usingPreferredDevice = preferSpeakerMic(created)
+        } else {
+            Log.i(TAG, "Opening AudioRecord on default input route")
+        }
+
+        if (created.state != AudioRecord.STATE_INITIALIZED) {
+            Log.e(TAG, "AudioRecord init failed state=${created.state}")
+            releaseRecordQuietly(created)
+            onCaptureError("AudioRecord init failed")
+            return false
+        }
+
+        created.startRecording()
+        if (created.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            Log.e(TAG, "AudioRecord start failed state=${created.recordingState}")
+            releaseRecordQuietly(created)
+            onCaptureError("AudioRecord start failed")
+            return false
+        }
+
+        record = created
+        worker = Thread({ captureLoop(created) }, "BitFunVoicePcm").also {
+            it.isDaemon = true
+            it.start()
+        }
+        Log.i(
+            TAG,
+            "PCM capture started sampleRate=$SAMPLE_RATE preferred=$usingPreferredDevice " +
+                "device=${created.preferredDevice?.id}/${created.preferredDevice?.productName}",
+        )
+        return true
+    }
+
+    private fun recreateWithoutPreferredDevice() {
+        if (!running.get() || !usingPreferredDevice) return
+        Log.i(
+            TAG,
+            "PCM near-silent on preferred mic (peak=${peakLifetime.get()}); falling back to default route",
+        )
+        val current = record
+        val currentWorker = worker
+        record = null
+        worker = null
+        try {
+            if (current?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                current.stop()
+            }
+        } catch (_: Exception) {
+        }
+        releaseRecordQuietly(current)
+        // Never join the capture thread from itself — reopen on the main looper.
+        val reopen = Runnable {
+            if (!running.get()) return@Runnable
+            if (!openAndStart(preferSpeakerMic = false)) {
+                running.set(false)
+                releaseRayNeoMicMode()
+                onCaptureError("PCM fallback open failed")
+            }
+        }
+        if (currentWorker != null && currentWorker !== Thread.currentThread()) {
+            try {
+                currentWorker.join(300)
+            } catch (_: Exception) {
+            }
+            mainHandler.post(reopen)
+        } else {
+            mainHandler.post(reopen)
+        }
     }
 
     private fun captureLoop(audioRecord: AudioRecord) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         val buffer = ByteArray(BUFFER_BYTES)
         var frames = 0
-        var peakAbs = 0
-        while (running.get()) {
+        var peakWindow = 0
+        var fallbackChecked = false
+        while (running.get() && record === audioRecord) {
             val read = try {
                 audioRecord.read(buffer, 0, buffer.size)
             } catch (error: Exception) {
@@ -117,10 +186,20 @@ class VoicePcmCapture(
             }
             if (read > 0) {
                 frames += 1
-                peakAbs = maxOf(peakAbs, peakAbsPcm16(buffer, read))
+                val peak = peakAbsPcm16(buffer, read)
+                peakWindow = maxOf(peakWindow, peak)
+                peakLifetime.accumulateAndGet(peak) { prev, next -> maxOf(prev, next) }
                 if (frames % 25 == 0) {
-                    Log.i(TAG, "PCM frames=$frames peak=$peakAbs rayNeo=$rayNeoDevice")
-                    peakAbs = 0
+                    Log.d(TAG, "PCM frames=$frames peak=$peakWindow lifetime=${peakLifetime.get()}")
+                    peakWindow = 0
+                }
+                // ~1s at 16kHz / 1280-byte frames (40ms): if still silent, drop forced device.
+                if (!fallbackChecked && frames >= 25 && usingPreferredDevice) {
+                    fallbackChecked = true
+                    if (peakLifetime.get() < SILENCE_PEAK_THRESHOLD) {
+                        recreateWithoutPreferredDevice()
+                        break
+                    }
                 }
                 try {
                     onPcm(buffer.copyOf(read), read)
@@ -128,14 +207,14 @@ class VoicePcmCapture(
                     Log.e(TAG, "onPcm failed", error)
                 }
             } else if (read < 0) {
-                Log.w(TAG, "AudioRecord.read returned $read")
+                Log.e(TAG, "AudioRecord.read returned $read")
                 if (running.get()) {
                     onCaptureError("AudioRecord read error $read")
                 }
                 break
             }
         }
-        Log.i(TAG, "PCM capture loop ended frames=$frames")
+        Log.d(TAG, "PCM capture loop ended frames=$frames maxPeak=${peakLifetime.get()}")
     }
 
     private fun createAudioRecord(): AudioRecord {
@@ -154,38 +233,55 @@ class VoicePcmCapture(
         )
     }
 
-    private fun preferSpeakerMic(audioRecord: AudioRecord) {
+    /**
+     * Prefer SPEAKER_MIC by product/address name. Only use hardcoded id=23 when
+     * that device also looks like SPEAKER_MIC — on X3 Pro a bare id can route
+     * to a silent input and yield peak=0.
+     */
+    private fun preferSpeakerMic(audioRecord: AudioRecord): Boolean {
         val devices = try {
             audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
         } catch (error: Exception) {
-            Log.w(TAG, "getDevices failed", error)
-            return
+            Log.e(TAG, "getDevices failed", error)
+            return false
         }
         for (device in devices) {
-            Log.i(
+            Log.e(
                 TAG,
                 "input device id=${device.id} type=${device.type} " +
                     "product=${device.productName} address=${device.address}",
             )
         }
-        val preferred = devices.firstOrNull { isSpeakerMic(it) }
-            ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+        val byName = devices.firstOrNull { device ->
+            val product = device.productName?.toString().orEmpty()
+            val address = device.address.orEmpty()
+            product.contains("SPEAKER_MIC", ignoreCase = true) ||
+                address.contains("SPEAKER_MIC", ignoreCase = true)
+        }
+        val byIdHint = devices.firstOrNull { device ->
+            device.id == SPEAKER_MIC_ID_HINT && isLikelySpeakerMic(device)
+        }
+        val preferred = byName ?: byIdHint
         if (preferred == null) {
-            Log.w(TAG, "No preferred SPEAKER_MIC / builtin mic found")
-            return
+            Log.e(TAG, "SPEAKER_MIC not found by name; using default route")
+            return false
         }
         val ok = audioRecord.setPreferredDevice(preferred)
-        Log.i(
+        Log.e(
             TAG,
-            "setPreferredDevice id=${preferred.id} product=${preferred.productName} ok=$ok",
+            "setPreferredDevice id=${preferred.id} type=${preferred.type} " +
+                "product=${preferred.productName} ok=$ok",
         )
+        return ok
     }
 
-    private fun isSpeakerMic(device: AudioDeviceInfo): Boolean {
+    private fun isLikelySpeakerMic(device: AudioDeviceInfo): Boolean {
         val product = device.productName?.toString().orEmpty()
         val address = device.address.orEmpty()
-        return product.contains("SPEAKER_MIC", ignoreCase = true) ||
-            address.contains("SPEAKER_MIC", ignoreCase = true)
+        return product.contains("SPEAKER", ignoreCase = true) ||
+            product.contains("MIC", ignoreCase = true) ||
+            address.contains("SPEAKER", ignoreCase = true) ||
+            device.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
     }
 
     private fun releaseRayNeoMicMode() {
@@ -193,9 +289,9 @@ class VoicePcmCapture(
         rayNeoModeApplied = false
         try {
             audioManager.setParameters(PARAM_OFF)
-            Log.i(TAG, "RayNeo mic mode: $PARAM_OFF")
+            Log.e(TAG, "RayNeo mic mode: $PARAM_OFF")
         } catch (error: Exception) {
-            Log.w(TAG, "Failed to release audio_source_record", error)
+            Log.e(TAG, "Failed to release audio_source_record", error)
         }
     }
 
@@ -222,19 +318,11 @@ class VoicePcmCapture(
     companion object {
         private const val TAG = "BitFunGlassesVoice"
         const val SAMPLE_RATE = 16_000
-        private const val BUFFER_BYTES = 1280 // 40ms @ 16kHz mono PCM16
-        private const val PARAM_VOICE_RECOGNITION = "audio_source_record=VOICE_RECOGNITION"
+        /** Vendor sample hint only — never force by id alone. */
+        private const val SPEAKER_MIC_ID_HINT = 23
+        private const val BUFFER_BYTES = 1280
+        private const val SILENCE_PEAK_THRESHOLD = 200
+        private const val PARAM_VOICE_RECOGNITION = "audio_source_record=voice_recognition"
         private const val PARAM_OFF = "audio_source_record=off"
-
-        fun isRayNeoDevice(): Boolean {
-            val model = Build.MODEL.orEmpty()
-            val brand = Build.BRAND.orEmpty()
-            val manufacturer = Build.MANUFACTURER.orEmpty()
-            val product = Build.PRODUCT.orEmpty()
-            val haystack = "$model $brand $manufacturer $product"
-            return haystack.contains("rayneo", ignoreCase = true) ||
-                haystack.contains("ffalcon", ignoreCase = true) ||
-                model.contains("BRQ", ignoreCase = true)
-        }
     }
 }

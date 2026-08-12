@@ -402,6 +402,40 @@ export class RemoteSessionManager {
     return resp.turn_id;
   }
 
+  /**
+   * Transcribe PCM16 mono audio on the paired desktop using its current
+   * Voice Input local ASR settings (model/language resolved on the host).
+   */
+  async transcribeSpeech(options: {
+    pcm16Base64: string;
+    sampleRate?: number;
+    modelId?: string;
+    language?: string;
+  }): Promise<{ text: string; language: string; modelId: string }> {
+    const resp = await this.request<{
+      resp: string;
+      text?: string;
+      language?: string;
+      model_id?: string;
+      message?: string;
+    }>({
+      cmd: 'transcribe_speech',
+      pcm16_base64: options.pcm16Base64,
+      sample_rate: options.sampleRate ?? 16000,
+      ...(options.modelId?.trim() ? { model_id: options.modelId.trim() } : {}),
+      ...(options.language?.trim() ? { language: options.language.trim() } : {}),
+    });
+    const text = (resp.text || '').trim();
+    if (!text) {
+      throw new Error(resp.message || 'Empty speech transcription');
+    }
+    return {
+      text,
+      language: resp.language || 'auto',
+      modelId: resp.model_id || '',
+    };
+  }
+
   async cancelTask(sessionId: string, turnId?: string): Promise<void> {
     await this.request({
       cmd: 'cancel_task',

@@ -1,83 +1,98 @@
 package com.bitfun.glasses.ui
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.view.View
-import android.widget.Button
-import android.widget.TextView
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.bitfun.glasses.R
+import com.bitfun.glasses.databinding.ActivityQrScanBinding
 import com.bitfun.glasses.remote.PairingUrlParser
+import com.ffalcon.mercury.android.sdk.touch.TempleAction
+import com.ffalcon.mercury.android.sdk.ui.activity.BaseMirrorActivity
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.launch
 
 /**
- * Launcher: scan Desktop Remote Connect QR, then open glasses-web in WebView.
+ * Binocular QR launch page (same BindingPair model as the main WebView host).
+ * Analysis-only camera — no preview, no aiming frame. Centered "扫码连接" only.
  */
-class QrScanActivity : AppCompatActivity() {
-    private lateinit var previewView: PreviewView
-    private lateinit var scanHint: TextView
-    private lateinit var scanStatus: TextView
-    private lateinit var permissionButton: Button
-
+class QrScanActivity : BaseMirrorActivity<ActivityQrScanBinding>() {
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private val handled = AtomicBoolean(false)
     private var cameraBound = false
+    private var cameraProvider: ProcessCameraProvider? = null
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (granted) {
-            permissionButton.visibility = View.GONE
-            scanStatus.setText(R.string.scan_hint)
+            mBindingPair.updateView {
+                permissionButton.visibility = View.GONE
+                scanHint.setText(R.string.scan_title)
+            }
             startCamera()
         } else {
-            permissionButton.visibility = View.VISIBLE
-            scanStatus.setText(R.string.scan_camera_denied)
+            mBindingPair.updateView {
+                permissionButton.visibility = View.VISIBLE
+            }
+            GlassesToast.show(this, R.string.scan_camera_denied, longDuration = true)
         }
-    }
-
-    override fun attachBaseContext(newBase: Context) {
-        super.attachBaseContext(PhonePreviewScale.wrap(newBase))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_qr_scan)
-        previewView = findViewById(R.id.previewView)
-        scanHint = findViewById(R.id.scanHint)
-        scanStatus = findViewById(R.id.scanStatus)
-        permissionButton = findViewById(R.id.permissionButton)
+        window.setBackgroundDrawableResource(R.color.bf_black)
 
-        scanHint.setText(R.string.scan_title)
-        scanStatus.setText(R.string.scan_hint)
-        permissionButton.setOnClickListener { requestCamera() }
+        mBindingPair.updateView {
+            scanHint.setText(R.string.scan_title)
+            permissionButton.setOnClickListener { requestCamera() }
+        }
 
         if (hasCameraPermission()) {
             startCamera()
         } else {
-            permissionButton.visibility = View.VISIBLE
-            scanStatus.setText(R.string.scan_camera_needed)
+            mBindingPair.updateView {
+                permissionButton.visibility = View.VISIBLE
+            }
             requestCamera()
+        }
+
+        collectTempleActions()
+    }
+
+    private fun collectTempleActions() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                templeActionViewModel.state.collect { action ->
+                    when (action) {
+                        is TempleAction.DoubleClick -> {
+                            Log.i(TAG, "Temple double-click: exit scan activity")
+                            finish()
+                        }
+                        else -> Unit
+                    }
+                }
+            }
         }
     }
 
     override fun onDestroy() {
+        cameraProvider?.unbindAll()
+        cameraProvider = null
         cameraExecutor.shutdown()
         super.onDestroy()
     }
@@ -97,10 +112,12 @@ class QrScanActivity : AppCompatActivity() {
             {
                 try {
                     val provider = providerFuture.get()
+                    cameraProvider = provider
                     bindCamera(provider)
                 } catch (error: Exception) {
                     Log.e(TAG, "Camera provider failed", error)
-                    scanStatus.text = error.message ?: getString(R.string.status_error)
+                    val message = error.message ?: getString(R.string.status_error)
+                    GlassesToast.show(this, message, longDuration = true)
                 }
             },
             ContextCompat.getMainExecutor(this),
@@ -108,9 +125,7 @@ class QrScanActivity : AppCompatActivity() {
     }
 
     private fun bindCamera(provider: ProcessCameraProvider) {
-        val preview = Preview.Builder().build().also {
-            it.surfaceProvider = previewView.surfaceProvider
-        }
+        // No Preview use-case: HUD-only; both eyes share identical BindingPair UI.
         val analysis = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
@@ -148,30 +163,22 @@ class QrScanActivity : AppCompatActivity() {
                 CameraSelector.DEFAULT_FRONT_CAMERA
             else -> throw IllegalStateException("No camera available on this device")
         }
-        provider.bindToLifecycle(this, selector, preview, analysis)
+        provider.bindToLifecycle(this, selector, analysis)
         cameraBound = true
-        scanStatus.setText(R.string.scan_hint)
     }
 
     private fun onQrDetected(raw: String) {
         if (!handled.compareAndSet(false, true)) return
         runOnUiThread {
             try {
-                // Validate relay reachability rules; WebView still loads the full QR URL.
                 PairingUrlParser.parse(raw)
-                scanStatus.setText(R.string.scan_opening)
-                scanStatus.setTextColor(ContextCompat.getColor(this, R.color.bf_scan_ok))
                 startActivity(MobileWebActivity.intent(this, raw.trim()))
                 finish()
             } catch (error: Exception) {
                 handled.set(false)
                 Log.w(TAG, "Invalid QR: ${error.message}")
-                Toast.makeText(
-                    this,
-                    error.message ?: getString(R.string.scan_invalid_qr),
-                    Toast.LENGTH_LONG,
-                ).show()
-                scanStatus.text = error.message ?: getString(R.string.scan_invalid_qr)
+                val message = error.message ?: getString(R.string.scan_invalid_qr)
+                GlassesToast.show(this, message, longDuration = true)
             }
         }
     }

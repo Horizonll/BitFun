@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">BitFun 眼镜</string>
+    <string name="app_name">BitFun</string>
     <string name="scan_title">扫码连接</string>
-    <string name="scan_hint">将桌面端远程控制二维码对准框内</string>
+    <string name="scan_hint">透过镜片看向桌面端远程控制二维码</string>
     <string name="scan_grant_camera">允许使用相机</string>
     <string name="scan_camera_needed">需要相机权限才能扫描配对二维码</string>
     <string name="scan_camera_denied">相机权限被拒绝，请点击「允许使用相机」重试</string>

@@ -9,6 +9,7 @@ import { reconcileDelegatedAccountOwner } from './services/delegatedAccountOwner
 import { ThemeProvider } from './theme';
 import { useConnectionHealth } from './hooks/useConnectionHealth';
 import { requestRescanQr } from './services/glassesHost';
+import { installTempleFocus } from './services/templeFocus';
 import { useMobileStore } from './services/store';
 import './styles/index.scss';
 
@@ -24,11 +25,25 @@ const AppContent: React.FC = () => {
   useEffect(() => {
     document.documentElement.classList.add('vr-ui');
     document.body.classList.add('vr-ui');
+    document.documentElement.style.setProperty('--color-bg-primary', '#000000');
+    document.documentElement.style.setProperty('--color-bg-secondary', '#000000');
+    document.documentElement.style.backgroundColor = '#000000';
+    document.body.style.backgroundColor = '#000000';
     return () => {
       document.documentElement.classList.remove('vr-ui');
       document.body.classList.remove('vr-ui');
+      document.documentElement.style.removeProperty('--color-bg-primary');
+      document.documentElement.style.removeProperty('--color-bg-secondary');
+      document.documentElement.style.backgroundColor = '';
+      document.body.style.backgroundColor = '';
     };
   }, []);
+
+  // Pairing page temple focus only; VrShell owns temple after pair (primary eye).
+  useEffect(() => {
+    if (paired) return;
+    return installTempleFocus();
+  }, [paired]);
 
   useConnectionHealth(sessionMgr);
 
@@ -90,14 +105,11 @@ const AppContent: React.FC = () => {
   }, []);
 
   return (
-    <div className="mobile-app mobile-app--vr">
+    <div className="mobile-app mobile-app--glasses">
       {connectionHealth === 'unreachable' && paired && (
         <div className="mobile-reconnect-banner" role="alert">
           <span className="mobile-reconnect-spinner" />
           <span>{t('sessions.reconnecting')}</span>
-          <button type="button" onClick={handleDisconnect}>
-            {t('sessions.repair')}
-          </button>
           <button type="button" onClick={handleRescan}>
             {t('sessions.rescan')}
           </button>
@@ -108,8 +120,6 @@ const AppContent: React.FC = () => {
         <VrShell
           sessionMgr={sessionMgrRef.current}
           client={clientRef.current}
-          onDisconnect={handleDisconnect}
-          onRescan={handleRescan}
         />
       )}
     </div>

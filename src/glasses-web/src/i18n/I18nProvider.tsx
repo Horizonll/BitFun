@@ -1,4 +1,10 @@
-import React, { createContext, useCallback, useLayoutEffect, useMemo, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from 'react';
 import { messages, type MobileLanguage } from './messages';
 import {
   getMobileFallbackChain,
@@ -6,6 +12,10 @@ import {
   isMobileLanguage,
   resolveMobileLanguage,
 } from './localeRegistry';
+import {
+  getSharedLanguage,
+  putSharedLanguage,
+} from '../services/glassesHost';
 
 interface TranslateParams {
   [key: string]: string | number;
@@ -55,6 +65,9 @@ export function translate(language: MobileLanguage, key: string, params?: Transl
 }
 
 function detectInitialLanguage(): MobileLanguage {
+  const shared = getSharedLanguage();
+  if (isMobileLanguage(shared)) return shared;
+
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (isMobileLanguage(stored)) return stored;
@@ -129,6 +142,7 @@ export const I18nProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {
       // ignore storage failures
     }
+    putSharedLanguage(language);
   }, [language]);
 
   const setLanguage = useCallback((nextLanguage: MobileLanguage) => {

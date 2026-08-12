@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="bf_black">#FF000000</color>
     <color name="bf_white">#FFFFFFFF</color>
     <color name="bf_muted">#E6FFFFFF</color>
     <!-- Low APL accent fill for themed buttons (design guide §8.1). -->
